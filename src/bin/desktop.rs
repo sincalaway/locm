@@ -6,16 +6,23 @@ mod desktop_backend;
 #[path = "../engine_manager.rs"]
 mod engine_manager;
 
+#[path = "../media_backend.rs"]
+mod media_backend;
+
 use llama_server_launcher_rs::run_config::{
     build_server_args, lan_bind_host, probe_capabilities, RunPreferences, ServerCapabilities,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -34,9 +41,39 @@ struct EngineProgress {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelProgress {
+    download_id: String,
     model_name: String,
     completed: u64,
     total: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaModelProgress {
+    download_id: String,
+    file_name: String,
+    completed: u64,
+    total: u64,
+    overall_completed: u64,
+    overall_total: u64,
+}
+
+#[derive(Clone)]
+struct ModelDownloadState {
+    active: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+impl Default for ModelDownloadState {
+    fn default() -> Self {
+        Self {
+            active: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct MediaGenerationState {
+    active: Arc<Mutex<HashMap<String, Arc<media_backend::GenerationControl>>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -164,6 +201,11 @@ fn hardware_snapshot() -> desktop_backend::HardwareSnapshot {
 }
 
 #[tauri::command]
+fn model_storage_snapshot(app: AppHandle) -> Result<desktop_backend::StorageSnapshot, String> {
+    desktop_backend::model_storage_snapshot(&app)
+}
+
+#[tauri::command]
 fn system_snapshot() -> desktop_backend::SystemSnapshot {
     desktop_backend::system_snapshot()
 }
@@ -231,6 +273,15 @@ fn choose_model_file(app: AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 fn choose_directory(app: AppHandle) -> Result<Option<String>, String> {
     desktop_backend::pick_directory(&app)
+}
+
+#[tauri::command]
+async fn scan_comfyui_models(
+    directory: String,
+) -> Result<desktop_backend::ComfyUiModelScan, String> {
+    tauri::async_runtime::spawn_blocking(move || desktop_backend::scan_comfyui_models(&directory))
+        .await
+        .map_err(|error| format!("扫描 ComfyUI 模型目录任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -312,10 +363,13 @@ fn import_model(app: AppHandle, source: String) -> Result<Vec<desktop_backend::M
 #[tauri::command]
 async fn search_huggingface(
     query: String,
+    category: String,
 ) -> Result<Vec<desktop_backend::HuggingFaceModel>, String> {
-    tauri::async_runtime::spawn_blocking(move || desktop_backend::search_huggingface(&query))
-        .await
-        .map_err(|error| format!("模型搜索任务失败：{error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        desktop_backend::search_huggingface(&query, &category)
+    })
+    .await
+    .map_err(|error| format!("模型搜索任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -330,34 +384,196 @@ async fn huggingface_files(
 #[tauri::command]
 async fn download_huggingface_model(
     app: AppHandle,
+    state: tauri::State<'_, ModelDownloadState>,
+    download_id: String,
     repo_id: String,
     file_name: String,
 ) -> Result<Vec<desktop_backend::ModelInfo>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let event_app = app.clone();
-        let model_name = format!(
-            "{}__{}",
-            repo_id.replace('/', "--"),
-            file_name.replace('/', "__")
-        );
-        desktop_backend::download_huggingface_model(
-            &app,
-            &repo_id,
-            &file_name,
-            move |completed, total| {
-                let _ = event_app.emit(
-                    "model-progress",
-                    ModelProgress {
-                        model_name: model_name.clone(),
-                        completed,
-                        total,
-                    },
-                );
-            },
-        )
+    if download_id.is_empty() || download_id.len() > 128 {
+        return Err("下载任务标识无效".to_string());
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let active = state.active.clone();
+    {
+        let mut tasks = active
+            .lock()
+            .map_err(|_| "无法读取下载任务状态".to_string())?;
+        if !tasks.is_empty() {
+            return Err("已有模型下载正在进行；请等待完成或先取消".to_string());
+        }
+        tasks.insert(download_id.clone(), cancelled.clone());
+    }
+    let event_app = app.clone();
+    let event_download_id = download_id.clone();
+    let model_name = format!(
+        "{}__{}",
+        repo_id.replace('/', "--"),
+        file_name.replace('/', "__")
+    );
+    let result = desktop_backend::download_huggingface_model(
+        &app,
+        &repo_id,
+        &file_name,
+        cancelled.as_ref(),
+        move |completed, total| {
+            let _ = event_app.emit(
+                "model-progress",
+                ModelProgress {
+                    download_id: event_download_id.clone(),
+                    model_name: model_name.clone(),
+                    completed,
+                    total,
+                },
+            );
+        },
+    )
+    .await;
+    if let Ok(mut tasks) = active.lock() {
+        tasks.remove(&download_id);
+    }
+    match result {
+        Err(message) if cancelled.load(Ordering::Relaxed) => {
+            Err(format!("E_DOWNLOAD_CANCELLED:{message}"))
+        }
+        other => other,
+    }
+}
+
+#[tauri::command]
+async fn list_media_models(app: AppHandle) -> Result<Vec<media_backend::MediaModelFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || media_backend::list_media_models(&app))
+        .await
+        .map_err(|error| format!("读取媒体模型清单失败：{error}"))?
+}
+
+#[tauri::command]
+async fn huggingface_media_files(
+    repo_id: String,
+) -> Result<Vec<media_backend::RemoteMediaFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || media_backend::huggingface_media_files(&repo_id))
+        .await
+        .map_err(|error| format!("查询媒体组件清单失败：{error}"))?
+}
+
+#[tauri::command]
+async fn download_media_model_bundle(
+    app: AppHandle,
+    state: tauri::State<'_, ModelDownloadState>,
+    download_id: String,
+    repo_id: String,
+    file_names: Vec<String>,
+) -> Result<Vec<media_backend::MediaModelFile>, String> {
+    if download_id.is_empty() || download_id.len() > 128 {
+        return Err("下载任务标识无效".to_string());
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let active = state.active.clone();
+    {
+        let mut tasks = active
+            .lock()
+            .map_err(|_| "无法读取下载任务状态".to_string())?;
+        if !tasks.is_empty() {
+            return Err("已有模型下载正在进行；请等待完成或先取消".to_string());
+        }
+        tasks.insert(download_id.clone(), cancelled.clone());
+    }
+    let event_app = app.clone();
+    let event_download_id = download_id.clone();
+    let result = media_backend::download_media_bundle(
+        &app,
+        &repo_id,
+        &file_names,
+        cancelled.as_ref(),
+        move |file_name, completed, total, overall_completed, overall_total| {
+            let _ = event_app.emit(
+                "media-model-progress",
+                MediaModelProgress {
+                    download_id: event_download_id.clone(),
+                    file_name: file_name.to_string(),
+                    completed,
+                    total,
+                    overall_completed,
+                    overall_total,
+                },
+            );
+        },
+    )
+    .await;
+    if let Ok(mut tasks) = active.lock() {
+        tasks.remove(&download_id);
+    }
+    match result {
+        Err(message) if cancelled.load(Ordering::Relaxed) => {
+            Err(format!("E_DOWNLOAD_CANCELLED:{message}"))
+        }
+        other => other,
+    }
+}
+
+#[tauri::command]
+async fn generate_media(
+    app: AppHandle,
+    state: tauri::State<'_, MediaGenerationState>,
+    job_id: String,
+    request: media_backend::MediaGenerationRequest,
+) -> Result<media_backend::MediaGenerationResult, String> {
+    if job_id.is_empty() || job_id.len() > 128 {
+        return Err("创作任务标识无效".to_string());
+    }
+    let active = state.active.clone();
+    let control = Arc::new(media_backend::GenerationControl::new());
+    {
+        let mut tasks = active
+            .lock()
+            .map_err(|_| "无法读取创作任务状态".to_string())?;
+        if !tasks.is_empty() {
+            return Err("已有画图或视频任务正在进行；请等待完成或先取消".to_string());
+        }
+        tasks.insert(job_id.clone(), control.clone());
+    }
+    let app_for_task = app.clone();
+    let control_for_task = control.clone();
+    let task_result = tauri::async_runtime::spawn_blocking(move || {
+        media_backend::generate_media(&app_for_task, request, control_for_task)
     })
     .await
-    .map_err(|error| format!("模型下载任务失败：{error}"))?
+    .map_err(|error| format!("媒体生成任务异常：{error}"));
+    if let Ok(mut tasks) = active.lock() {
+        tasks.remove(&job_id);
+    }
+    task_result?
+}
+
+#[tauri::command]
+fn cancel_media_generation(
+    job_id: String,
+    state: tauri::State<'_, MediaGenerationState>,
+) -> Result<(), String> {
+    let tasks = state
+        .active
+        .lock()
+        .map_err(|_| "无法读取创作任务状态".to_string())?;
+    let task = tasks
+        .get(&job_id)
+        .ok_or_else(|| "创作任务不存在或已结束".to_string())?;
+    media_backend::cancel_generation(task);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_huggingface_download(
+    download_id: String,
+    state: tauri::State<'_, ModelDownloadState>,
+) -> Result<(), String> {
+    let tasks = state
+        .active
+        .lock()
+        .map_err(|_| "无法读取下载任务状态".to_string())?;
+    let task = tasks
+        .get(&download_id)
+        .ok_or_else(|| "下载任务不存在或已结束".to_string())?;
+    task.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -740,12 +956,15 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(RuntimeState::default())
+        .manage(ModelDownloadState::default())
+        .manage(MediaGenerationState::default())
         .invoke_handler(tauri::generate_handler![
             engine_statuses,
             engine_install_supported,
             engine_latest,
             engine_install,
             hardware_snapshot,
+            model_storage_snapshot,
             system_snapshot,
             app_settings,
             save_app_settings,
@@ -754,6 +973,7 @@ fn main() {
             remove_model,
             choose_model_file,
             choose_directory,
+            scan_comfyui_models,
             open_creations_directory,
             agent_workspace_path,
             agent_list_files,
@@ -765,6 +985,12 @@ fn main() {
             search_huggingface,
             huggingface_files,
             download_huggingface_model,
+            list_media_models,
+            huggingface_media_files,
+            download_media_model_bundle,
+            generate_media,
+            cancel_media_generation,
+            cancel_huggingface_download,
             server_capabilities,
             runtime_status,
             start_local_model,

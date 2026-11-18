@@ -1,11 +1,14 @@
 use reqwest::{blocking::Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     env, fs,
-    io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
     thread,
     time::Duration,
 };
@@ -14,6 +17,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_MODEL_DOWNLOAD_BYTES: u64 = 200 * 1024 * 1024 * 1024;
+const MIN_DOWNLOAD_FREE_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
 const APP_SETTINGS_FILE: &str = "settings.json";
 const CHAT_HISTORY_FILE: &str = "chat-sessions.json";
 const MAX_CHAT_HISTORY_BYTES: usize = 24 * 1024 * 1024;
@@ -29,6 +33,14 @@ pub struct HardwareSnapshot {
     pub available_memory_bytes: u64,
     pub gpu_name: Option<String>,
     pub gpu_memory_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageSnapshot {
+    pub model_directory: String,
+    pub total_bytes: Option<u64>,
+    pub available_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -62,6 +74,9 @@ pub struct HuggingFaceModel {
 pub struct HuggingFaceFile {
     pub name: String,
     pub size_bytes: Option<u64>,
+    pub quantization: Option<String>,
+    pub sha256: Option<String>,
+    pub license: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,6 +85,8 @@ pub struct AppSettings {
     pub model_directory: String,
     pub appearance: String,
     pub api_port: u16,
+    #[serde(default)]
+    pub comfyui_directory: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -78,6 +95,7 @@ impl Default for AppSettings {
             model_directory: String::new(),
             appearance: "system".to_string(),
             api_port: 8686,
+            comfyui_directory: None,
         }
     }
 }
@@ -93,9 +111,17 @@ struct ApiModel {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApiModelDetails {
     #[serde(default)]
     siblings: Vec<ApiSibling>,
+    #[serde(default)]
+    card_data: Option<ApiCardData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiCardData {
+    license: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +134,26 @@ struct ApiSibling {
 #[derive(Debug, Deserialize)]
 struct ApiLfs {
     size: Option<u64>,
+    sha256: Option<String>,
+    oid: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComfyUiModelFile {
+    pub name: String,
+    pub path: String,
+    pub category: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComfyUiModelScan {
+    pub selected_directory: String,
+    pub models_directory: String,
+    pub files: Vec<ComfyUiModelFile>,
+    pub truncated: bool,
 }
 
 static SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
@@ -283,6 +329,45 @@ pub fn hardware_snapshot() -> HardwareSnapshot {
         gpu_name,
         gpu_memory_bytes,
     }
+}
+
+#[cfg(windows)]
+fn disk_mount_contains_path(path: &Path, mount_point: &Path) -> bool {
+    let normalize = |value: &Path| {
+        value
+            .to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    let path = normalize(path);
+    let mount = normalize(mount_point);
+    if mount.is_empty() || path == mount {
+        return !mount.is_empty();
+    }
+    path.strip_prefix(&mount)
+        .is_some_and(|suffix| suffix.starts_with('\\'))
+}
+
+#[cfg(not(windows))]
+fn disk_mount_contains_path(path: &Path, mount_point: &Path) -> bool {
+    path.starts_with(mount_point)
+}
+
+pub fn model_storage_snapshot(app: &AppHandle) -> Result<StorageSnapshot, String> {
+    let model_directory = models_directory(app)?;
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let matching_disk = disks
+        .list()
+        .iter()
+        .filter(|disk| disk_mount_contains_path(&model_directory, disk.mount_point()))
+        .max_by_key(|disk| disk.mount_point().as_os_str().len());
+
+    Ok(StorageSnapshot {
+        model_directory: model_directory.display().to_string(),
+        total_bytes: matching_disk.map(|disk| disk.total_space()),
+        available_bytes: matching_disk.map(|disk| disk.available_space()),
+    })
 }
 
 pub fn system_snapshot() -> SystemSnapshot {
@@ -483,7 +568,174 @@ pub fn pick_directory(app: &AppHandle) -> Result<Option<String>, String> {
         .blocking_pick_folder()
         .map(|path| path.into_path().map(|path| path.display().to_string()))
         .transpose()
-        .map_err(|error| format!("无法读取所选目录：{error}"))
+        .map_err(|error| format!("无法读取所选目录路径：{error}"))
+}
+
+const COMFYUI_MODEL_DIRS: &[&str] = &[
+    "checkpoints",
+    "diffusion_models",
+    "unet",
+    "loras",
+    "vae",
+    "text_encoders",
+    "clip",
+    "clip_vision",
+    "controlnet",
+    "embeddings",
+    "upscale_models",
+    "style_models",
+    "hypernetworks",
+    "animatediff_models",
+];
+const MAX_COMFYUI_MODEL_FILES: usize = 5_000;
+const MAX_COMFYUI_SCAN_DEPTH: usize = 6;
+const MAX_COMFYUI_SCAN_ENTRIES: usize = 50_000;
+const MAX_COMFYUI_SCAN_DIRECTORIES: usize = 5_000;
+
+fn is_media_weight_file(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "safetensors" | "ckpt" | "pt" | "pth" | "gguf" | "bin" | "onnx"
+    )
+}
+
+fn collect_comfyui_models(
+    directory: &Path,
+    category: &str,
+    depth: usize,
+    files: &mut Vec<ComfyUiModelFile>,
+    truncated: &mut bool,
+    visited_entries: &mut usize,
+    visited_directories: &mut usize,
+) {
+    if files.len() >= MAX_COMFYUI_MODEL_FILES
+        || *visited_entries >= MAX_COMFYUI_SCAN_ENTRIES
+        || *visited_directories >= MAX_COMFYUI_SCAN_DIRECTORIES
+    {
+        *truncated = true;
+        return;
+    }
+    *visited_directories += 1;
+    let Ok(entries) = fs::read_dir(directory) else {
+        *truncated = true;
+        return;
+    };
+    for entry in entries {
+        if *visited_entries >= MAX_COMFYUI_SCAN_ENTRIES {
+            *truncated = true;
+            break;
+        }
+        *visited_entries += 1;
+        let Ok(entry) = entry else {
+            *truncated = true;
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            *truncated = true;
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            if depth < MAX_COMFYUI_SCAN_DEPTH {
+                collect_comfyui_models(
+                    &path,
+                    category,
+                    depth + 1,
+                    files,
+                    truncated,
+                    visited_entries,
+                    visited_directories,
+                );
+                if *truncated {
+                    break;
+                }
+            } else {
+                *truncated = true;
+                break;
+            }
+        } else if file_type.is_file() && is_media_weight_file(&path) {
+            let Ok(metadata) = entry.metadata() else {
+                *truncated = true;
+                continue;
+            };
+            files.push(ComfyUiModelFile {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: path.display().to_string(),
+                category: category.to_string(),
+                size_bytes: metadata.len(),
+            });
+            if files.len() >= MAX_COMFYUI_MODEL_FILES {
+                *truncated = true;
+                break;
+            }
+        }
+    }
+}
+
+pub fn scan_comfyui_models(directory: &str) -> Result<ComfyUiModelScan, String> {
+    if directory.trim().is_empty() {
+        return Err("请先选择 ComfyUI 文件夹或其 models 文件夹".to_string());
+    }
+    let selected_directory = PathBuf::from(directory)
+        .canonicalize()
+        .map_err(|error| format!("无法访问所选模型文件夹：{error}"))?;
+    if !selected_directory.is_dir() {
+        return Err("所选路径不是文件夹".to_string());
+    }
+    let nested_models = selected_directory.join("models");
+    let models_directory = if fs::symlink_metadata(&nested_models)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false)
+    {
+        nested_models
+            .canonicalize()
+            .map_err(|error| format!("无法确认 ComfyUI models 文件夹：{error}"))?
+    } else {
+        selected_directory.clone()
+    };
+    let mut files = Vec::new();
+    let mut truncated = false;
+    let mut visited_entries = 0usize;
+    let mut visited_directories = 0usize;
+    for directory_name in COMFYUI_MODEL_DIRS {
+        let category_directory = models_directory.join(directory_name);
+        if !fs::symlink_metadata(&category_directory)
+            .map(|metadata| metadata.file_type().is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        collect_comfyui_models(
+            &category_directory,
+            directory_name,
+            0,
+            &mut files,
+            &mut truncated,
+            &mut visited_entries,
+            &mut visited_directories,
+        );
+        if truncated {
+            break;
+        }
+    }
+    files.sort_by(|left, right| {
+        left.category
+            .cmp(&right.category)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(ComfyUiModelScan {
+        selected_directory: selected_directory.display().to_string(),
+        models_directory: models_directory.display().to_string(),
+        files,
+        truncated,
+    })
 }
 
 pub fn open_creations_directory(app: &AppHandle, kind: &str) -> Result<String, String> {
@@ -547,6 +799,22 @@ fn is_huggingface_host(host: &str) -> bool {
         || host.to_ascii_lowercase().ends_with(".hf.co")
 }
 
+fn hf_network_error_category(error: &reqwest::Error, causes: &str) -> &'static str {
+    let details = format!("{error} {causes}").to_ascii_lowercase();
+    if ["tls", "ssl", "certificate", "x509", "handshake"]
+        .iter()
+        .any(|needle| details.contains(needle))
+    {
+        "TLS/证书验证失败"
+    } else if error.is_timeout() {
+        "请求超时"
+    } else if error.is_connect() {
+        "无法连接 Hugging Face；请检查网络、DNS 或系统代理设置"
+    } else {
+        "网络请求出错"
+    }
+}
+
 fn hf_get(url: &str, action: &str) -> Result<reqwest::blocking::Response, String> {
     let client =
         hf_client().map_err(|error| format!("无法初始化 Hugging Face 网络客户端：{error}"))?;
@@ -574,22 +842,16 @@ fn hf_get(url: &str, action: &str) -> Result<reqwest::blocking::Response, String
                     thread::sleep(Duration::from_millis(350 * u64::from(attempt)));
                     continue;
                 }
-                let category = if error.is_timeout() {
-                    "请求超时"
-                } else if error.is_connect() {
-                    "无法连接 Hugging Face；请检查网络、DNS 或代理设置"
-                } else {
-                    "网络请求出错"
-                };
                 let mut causes = vec![error.to_string()];
                 let mut source = std::error::Error::source(&error);
                 while let Some(cause) = source {
                     causes.push(cause.to_string());
                     source = cause.source();
                 }
+                let detail = causes.join(" → ");
+                let category = hf_network_error_category(&error, &detail);
                 return Err(format!(
-                    "{action}失败：{category}（已尝试 {attempt} 次）：{}",
-                    causes.join(" → ")
+                    "{action}失败：{category}（已尝试 {attempt} 次）：{detail}"
                 ));
             }
         }
@@ -597,16 +859,33 @@ fn hf_get(url: &str, action: &str) -> Result<reqwest::blocking::Response, String
     Err(format!("{action}失败：网络请求重试次数已用尽。"))
 }
 
-pub fn search_huggingface(query: &str) -> Result<Vec<HuggingFaceModel>, String> {
+fn huggingface_search_url(query: &str, category: &str) -> Result<String, String> {
     let query = query.trim();
     if query.len() < 2 || query.len() > 120 {
         return Err("请输入 2 到 120 个字符的模型关键词".to_string());
     }
-    let url = format!(
-        "https://huggingface.co/api/models?search={}&filter=gguf&sort=downloads&limit=20",
-        percent_encode(query)
-    );
-    let response = hf_get(&url, "查询 Hugging Face")?;
+    let query = percent_encode(query);
+    let url = match category {
+        "all" => format!(
+            "https://huggingface.co/api/models?search={query}&sort=downloads&direction=-1&limit=20"
+        ),
+        "chat" => format!(
+            "https://huggingface.co/api/models?search={query}&filter=gguf&sort=downloads&direction=-1&limit=20"
+        ),
+        "image" => format!(
+            "https://huggingface.co/api/models?search={query}&pipeline_tag=text-to-image&sort=downloads&direction=-1&limit=20"
+        ),
+        "video" => format!(
+            "https://huggingface.co/api/models?search={query}&pipeline_tag=text-to-video&sort=downloads&direction=-1&limit=20"
+        ),
+        _ => return Err("模型分类无效；仅支持 all、chat、image 或 video".to_string()),
+    };
+    Ok(url)
+}
+
+pub fn search_huggingface(query: &str, category: &str) -> Result<Vec<HuggingFaceModel>, String> {
+    let url = huggingface_search_url(query, category)?;
+    let response = hf_get(&url, "查询 Hugging Face 模型库")?;
     let models: Vec<ApiModel> = response
         .json()
         .map_err(|error| format!("解析模型搜索结果失败：{error}"))?;
@@ -623,6 +902,16 @@ pub fn search_huggingface(query: &str) -> Result<Vec<HuggingFaceModel>, String> 
 }
 
 pub fn huggingface_files(repo_id: &str) -> Result<Vec<HuggingFaceFile>, String> {
+    huggingface_files_cancellable(repo_id, None)
+}
+
+fn huggingface_files_cancellable(
+    repo_id: &str,
+    cancelled: Option<&AtomicBool>,
+) -> Result<Vec<HuggingFaceFile>, String> {
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err("下载已取消".to_string());
+    }
     if !is_safe_repo_id(repo_id) {
         return Err("模型仓库标识格式无效".to_string());
     }
@@ -634,6 +923,10 @@ pub fn huggingface_files(repo_id: &str) -> Result<Vec<HuggingFaceFile>, String> 
     let model: ApiModelDetails = response
         .json()
         .map_err(|error| format!("解析仓库文件列表失败：{error}"))?;
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err("下载已取消".to_string());
+    }
+    let license = model.card_data.and_then(|data| data.license);
     let mut files: Vec<HuggingFaceFile> = model
         .siblings
         .into_iter()
@@ -641,23 +934,151 @@ pub fn huggingface_files(repo_id: &str) -> Result<Vec<HuggingFaceFile>, String> 
             file.rfilename.to_ascii_lowercase().ends_with(".gguf")
                 && is_safe_relative_file(&file.rfilename)
         })
-        .map(|file| HuggingFaceFile {
-            name: file.rfilename,
-            size_bytes: file.size.or_else(|| file.lfs.and_then(|lfs| lfs.size)),
+        .map(|file| {
+            let size_bytes = file
+                .size
+                .or_else(|| file.lfs.as_ref().and_then(|lfs| lfs.size));
+            let sha256 = file.lfs.and_then(|lfs| {
+                lfs.sha256.or_else(|| {
+                    lfs.oid
+                        .and_then(|oid| oid.strip_prefix("sha256:").map(str::to_string))
+                })
+            });
+            HuggingFaceFile {
+                quantization: quantization_from_filename(&file.rfilename),
+                name: file.rfilename,
+                size_bytes,
+                sha256,
+                license: license.clone(),
+            }
         })
         .collect();
     files.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(files)
 }
 
-pub fn download_huggingface_model<F>(
+fn quantization_from_filename(file_name: &str) -> Option<String> {
+    let uppercase = file_name.to_ascii_uppercase();
+    uppercase
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .find(|token| {
+            (token.starts_with("Q")
+                || token.starts_with("IQ")
+                || token.starts_with("F16")
+                || token.starts_with("BF16"))
+                && token.chars().any(|character| character.is_ascii_digit())
+        })
+        .map(str::to_string)
+}
+
+#[cfg(windows)]
+fn commit_verified_model(partial: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(existing: *const u16, new_path: *const u16, flags: u32) -> i32;
+    }
+    let existing: Vec<u16> = partial
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let new_path: Vec<u16> = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // Omitting MOVEFILE_REPLACE_EXISTING makes publication fail if a target already exists.
+    let result = unsafe { MoveFileExW(existing.as_ptr(), new_path.as_ptr(), 0x0000_0008) };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn commit_verified_model(partial: &Path, target: &Path) -> std::io::Result<()> {
+    fs::hard_link(partial, target)?;
+    fs::remove_file(partial)
+}
+
+async fn cleanup_download_partial(path: &Path) -> String {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => format!("；临时文件清理失败，请检查 {}：{error}", path.display()),
+    }
+}
+
+fn async_hf_client() -> Result<reqwest::Client, String> {
+    let allow = |attempt: reqwest::redirect::Attempt<'_>| {
+        let url = attempt.url();
+        if url.scheme() == "https" && is_huggingface_host(url.host_str().unwrap_or_default()) {
+            attempt.follow()
+        } else {
+            attempt.error("拒绝跳转到非 Hugging Face 官方 HTTPS 域名")
+        }
+    };
+    reqwest::Client::builder()
+        .user_agent(concat!("local-engine-manager/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(60 * 60))
+        .redirect(Policy::custom(allow))
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+async fn wait_for_download_cancel(cancelled: &AtomicBool) {
+    while !cancelled.load(Ordering::Relaxed) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn download_hf_get(
+    client: &reqwest::Client,
+    url: &str,
+    action: &str,
+    cancelled: &AtomicBool,
+) -> Result<reqwest::Response, String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("下载已取消".to_string());
+    }
+    let result = tokio::select! {
+        biased;
+        _ = wait_for_download_cancel(cancelled) => return Err("下载已取消".to_string()),
+        result = client.get(url).send() => result,
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("下载已取消".to_string());
+    }
+    let response = result.map_err(|error| {
+        let category = hf_network_error_category(&error, &error.to_string());
+        format!("{action}失败：{category}：{error}")
+    })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = match status.as_u16() {
+            401 | 403 | 404 => "仓库可能不存在、设为私有，或需要 Hugging Face 账号授权。",
+            429 => "请求频率受限，请稍后重试。",
+            _ => "请稍后重试并检查网络连接。",
+        };
+        return Err(format!(
+            "{action}失败：Hugging Face 返回 HTTP {status}。{detail}"
+        ));
+    }
+    Ok(response)
+}
+
+pub async fn download_huggingface_model<F>(
     app: &AppHandle,
     repo_id: &str,
     file_name: &str,
+    cancelled: &AtomicBool,
     mut progress: F,
 ) -> Result<Vec<ModelInfo>, String>
 where
-    F: FnMut(u64, u64),
+    F: FnMut(u64, u64) + Send + 'static,
 {
     if !is_safe_repo_id(repo_id)
         || !is_safe_relative_file(file_name)
@@ -665,19 +1086,96 @@ where
     {
         return Err("模型仓库或文件名无效；只允许下载仓库中的 GGUF 文件".to_string());
     }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("下载已取消".to_string());
+    }
+    let client = async_hf_client()?;
+    let metadata_url = format!(
+        "https://huggingface.co/api/models/{}?blobs=true",
+        percent_encode(repo_id)
+    );
+    let metadata_response =
+        download_hf_get(&client, &metadata_url, "获取仓库文件", cancelled).await?;
+    let model: ApiModelDetails = tokio::select! {
+        biased;
+        _ = wait_for_download_cancel(cancelled) => return Err("下载已取消".to_string()),
+        result = metadata_response.json() => result.map_err(|error| format!("解析仓库文件列表失败：{error}"))?,
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("下载已取消".to_string());
+    }
+    let license = model.card_data.and_then(|data| data.license);
+    let file = model
+        .siblings
+        .into_iter()
+        .filter(|file| {
+            file.rfilename.to_ascii_lowercase().ends_with(".gguf")
+                && is_safe_relative_file(&file.rfilename)
+        })
+        .map(|file| {
+            let size_bytes = file
+                .size
+                .or_else(|| file.lfs.as_ref().and_then(|lfs| lfs.size));
+            let sha256 = file.lfs.and_then(|lfs| {
+                lfs.sha256.or_else(|| {
+                    lfs.oid
+                        .and_then(|oid| oid.strip_prefix("sha256:").map(str::to_string))
+                })
+            });
+            HuggingFaceFile {
+                quantization: quantization_from_filename(&file.rfilename),
+                name: file.rfilename,
+                size_bytes,
+                sha256,
+                license: license.clone(),
+            }
+        })
+        .find(|file| file.name == file_name)
+        .ok_or_else(|| "所选文件不在 Hugging Face 仓库的 GGUF 文件列表中".to_string())?;
+    let expected_size = file
+        .size_bytes
+        .ok_or_else(|| "仓库未提供可核实的文件大小；已阻止下载".to_string())?;
+    let expected_sha256 = file
+        .sha256
+        .filter(|digest| {
+            digest.len() == 64
+                && digest
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        })
+        .ok_or_else(|| "仓库未提供可核实的 LFS SHA-256；已阻止下载".to_string())?;
+    if expected_size == 0 || expected_size > MAX_MODEL_DOWNLOAD_BYTES {
+        return Err("模型文件大小无效或超过 200 GB 下载上限".to_string());
+    }
+    let available_bytes = model_storage_snapshot(app)?
+        .available_bytes
+        .ok_or_else(|| {
+            "无法检测模型目录所在磁盘的可用空间；为避免写满磁盘，已阻止下载".to_string()
+        })?;
+    let required_space = expected_size.saturating_add(MIN_DOWNLOAD_FREE_RESERVE_BYTES);
+    if available_bytes < required_space {
+        return Err(format!(
+            "磁盘空间不足：文件为 {expected_size} bytes，另需至少 256 MiB 安全余量；当前仅剩 {available_bytes} bytes"
+        ));
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("下载已取消".to_string());
+    }
     let encoded_repo = percent_encode(repo_id);
     let encoded_file = percent_encode_path(file_name);
     let url = format!("https://huggingface.co/{encoded_repo}/resolve/main/{encoded_file}");
-    let response = hf_get(&url, "下载模型")?;
+    let mut response = download_hf_get(&client, &url, "下载模型", cancelled).await?;
     let final_url = response.url();
     if final_url.scheme() != "https"
         || !is_huggingface_host(final_url.host_str().unwrap_or_default())
     {
         return Err("模型下载最终地址不属于 Hugging Face 官方 HTTPS 域名".to_string());
     }
-    let total = response.content_length().unwrap_or(0);
-    if total > MAX_MODEL_DOWNLOAD_BYTES {
-        return Err("模型文件超过 200 GB 下载上限".to_string());
+    if response
+        .content_length()
+        .is_some_and(|length| length != expected_size)
+    {
+        return Err("下载服务器声明的文件大小与仓库元数据不一致；已阻止下载".to_string());
     }
     let root = models_directory(app)?;
     let flat_repo = repo_id.replace('/', "--");
@@ -695,48 +1193,75 @@ where
         return Err(format!("模型文件已存在：{target_name}"));
     }
     let partial = root.join(format!(".{target_name}.download"));
-    let result = (|| {
-        let mut input = response;
-        let mut output = fs::OpenOptions::new()
+    let download_result: Result<(), String> = async {
+        let mut output = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&partial)
+            .await
             .map_err(|error| format!("无法创建模型临时文件：{error}"))?;
-        let mut buffer = [0u8; 256 * 1024];
         let mut received = 0u64;
+        let mut hasher = Sha256::new();
         loop {
-            let count = input
-                .read(&mut buffer)
-                .map_err(|error| format!("模型下载中断：{error}"))?;
-            if count == 0 {
-                break;
+            let chunk = tokio::select! {
+                biased;
+                _ = wait_for_download_cancel(cancelled) => return Err("下载已取消".to_string()),
+                result = response.chunk() => result.map_err(|error| format!("模型下载中断：{error}"))?,
+            };
+            let Some(chunk) = chunk else { break };
+            if cancelled.load(Ordering::Relaxed) {
+                return Err("下载已取消".to_string());
             }
             received = received
-                .checked_add(count as u64)
+                .checked_add(chunk.len() as u64)
                 .ok_or_else(|| "模型文件大小溢出".to_string())?;
-            if received > MAX_MODEL_DOWNLOAD_BYTES || (total > 0 && received > total) {
+            if received > MAX_MODEL_DOWNLOAD_BYTES || received > expected_size {
                 return Err("下载内容超过声明大小或安全上限".to_string());
             }
+            use tokio::io::AsyncWriteExt;
             output
-                .write_all(&buffer[..count])
+                .write_all(&chunk)
+                .await
                 .map_err(|error| format!("写入模型文件失败：{error}"))?;
-            progress(received, total);
+            hasher.update(&chunk);
+            progress(received, expected_size);
         }
-        if total > 0 && received != total {
+        if received != expected_size {
             return Err(format!(
-                "下载不完整：收到 {received} bytes，预期 {total} bytes"
+                "下载不完整：收到 {received} bytes，预期 {expected_size} bytes"
             ));
         }
-        output.flush().map_err(|error| error.to_string())?;
-        output.sync_all().map_err(|error| error.to_string())?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("下载已取消".to_string());
+        }
+        let actual_sha256 = format!("{:x}", hasher.finalize());
+        if !actual_sha256.eq_ignore_ascii_case(&expected_sha256) {
+            return Err("模型文件 SHA-256 校验失败；已清理不完整文件".to_string());
+        }
+        use tokio::io::AsyncWriteExt;
+        output.flush().await.map_err(|error| error.to_string())?;
+        output.sync_all().await.map_err(|error| error.to_string())?;
         drop(output);
-        fs::rename(&partial, &target).map_err(|error| format!("保存模型失败：{error}"))?;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("下载已取消".to_string());
+        }
         Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&partial);
     }
-    result?;
+    .await;
+    if let Err(error) = download_result {
+        let cleanup = cleanup_download_partial(&partial).await;
+        return Err(format!("{error}{cleanup}"));
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        let cleanup = cleanup_download_partial(&partial).await;
+        return Err(format!("下载已取消{cleanup}"));
+    }
+    if let Err(error) = commit_verified_model(&partial, &target) {
+        let cleanup = cleanup_download_partial(&partial).await;
+        return Err(format!(
+            "安全保存模型失败（不会覆盖已有文件）：{error}{cleanup}"
+        ));
+    }
     list_models(app)
 }
 
@@ -820,5 +1345,60 @@ mod tests {
             percent_encode_path("Q4 K M/model.gguf"),
             "Q4%20K%20M/model.gguf"
         );
+    }
+
+    #[test]
+    fn model_search_categories_are_explicit_and_reject_unknown_values() {
+        let all = huggingface_search_url("GGUF", "all").unwrap();
+        let chat = huggingface_search_url(" Q4 GGUF ", "chat").unwrap();
+        let image = huggingface_search_url("diffusion", "image").unwrap();
+        let video = huggingface_search_url("video", "video").unwrap();
+        assert_eq!(
+            all,
+            "https://huggingface.co/api/models?search=GGUF&sort=downloads&direction=-1&limit=20"
+        );
+        assert_eq!(chat, "https://huggingface.co/api/models?search=Q4%20GGUF&filter=gguf&sort=downloads&direction=-1&limit=20");
+        assert_eq!(image, "https://huggingface.co/api/models?search=diffusion&pipeline_tag=text-to-image&sort=downloads&direction=-1&limit=20");
+        assert_eq!(video, "https://huggingface.co/api/models?search=video&pipeline_tag=text-to-video&sort=downloads&direction=-1&limit=20");
+        assert!(huggingface_search_url("x", "chat").is_err());
+        assert!(huggingface_search_url("hello", "audio").is_err());
+    }
+
+    #[test]
+    fn quantization_is_read_from_the_real_filename_not_estimated() {
+        assert_eq!(
+            quantization_from_filename("model-Q4_K_M.gguf").as_deref(),
+            Some("Q4_K_M")
+        );
+        assert_eq!(
+            quantization_from_filename("weights-IQ4_XS.gguf").as_deref(),
+            Some("IQ4_XS")
+        );
+        assert_eq!(
+            quantization_from_filename("weights-f16.gguf").as_deref(),
+            Some("F16")
+        );
+        assert_eq!(quantization_from_filename("weights.gguf"), None);
+    }
+
+    #[test]
+    fn comfyui_scanner_lists_only_known_weight_extensions() {
+        let root = std::env::temp_dir().join(format!(
+            "locm-comfyui-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let checkpoints = root.join("models/checkpoints");
+        fs::create_dir_all(&checkpoints).unwrap();
+        fs::write(checkpoints.join("fixture.safetensors"), b"fixture").unwrap();
+        fs::write(checkpoints.join("readme.txt"), b"not a model").unwrap();
+        let scan = scan_comfyui_models(root.to_str().unwrap()).unwrap();
+        assert_eq!(scan.files.len(), 1);
+        assert_eq!(scan.files[0].name, "fixture.safetensors");
+        assert_eq!(scan.files[0].category, "checkpoints");
+        fs::remove_dir_all(root).unwrap();
     }
 }

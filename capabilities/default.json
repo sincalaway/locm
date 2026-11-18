@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "允许桌面主窗口接收引擎查询与下载进度事件。",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

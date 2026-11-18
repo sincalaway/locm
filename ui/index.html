@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>本地 AI 工作台</title>
+  <link rel="stylesheet" href="./app.css" />
+  <link rel="stylesheet" href="./agent.css" />
+  <script src="./app.js" defer></script>
+  <script src="./agent.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><span class="brand-mark">◇</span><span><strong>本地 AI 工作台</strong><small>LOCAL AI DESK</small></span></a>
+      <div class="nav-caption">工作区</div>
+      <nav class="side-nav" aria-label="主导航">
+        <a class="nav-item active" href="#overview" data-page="overview"><span>⌂</span>概览</a>
+        <a class="nav-item" href="#models" data-page="models"><span>▱</span>模型</a>
+        <a class="nav-item" href="#run" data-page="run"><span>▷</span>运行</a>
+        <a class="nav-item" href="#chat" data-page="chat"><span>◌</span>对话</a>
+        <a class="nav-item" href="#agent" data-page="agent"><span>▣</span>Agent</a>
+        <a class="nav-item" href="#schedule" data-page="schedule"><span>◷</span>定时</a>
+        <a class="nav-item" href="#image" data-page="image"><span>▧</span>画图</a>
+        <a class="nav-item" href="#video" data-page="video"><span>▻</span>视频</a>
+        <a class="nav-item" href="#monitor" data-page="monitor"><span>⌁</span>监测</a>
+        <a class="nav-item" href="#settings" data-page="settings"><span>☷</span>设置</a>
+      </nav>
+      <div class="sidebar-bottom"><div class="local-note"><i></i><div><strong>本地优先</strong><small>聊天内容留在此设备</small></div></div><small class="version">桌面 MVP · 0.2</small></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar"><div><span class="muted">工作区</span><span class="crumb">/</span><strong id="page-title">概览</strong></div><div class="topbar-right"><span class="privacy-chip"><i></i>本地管理</span><span id="runtime-chip" class="runtime-chip">模型未启动</span></div></header>
+      <div id="toast" role="status" aria-live="polite" hidden></div>
+
+      <section class="page active" id="page-overview" data-title="概览">
+        <div class="page-intro"><div><div class="eyebrow">DEVICE OVERVIEW</div><h1 id="overview-headline">正在读取本机配置…</h1><p class="intro-copy" id="overview-copy">自动检测处理器、内存、显卡和可用的本地 AI 引擎。</p></div><button class="button secondary" id="refresh-hardware">重新检测</button></div>
+        <div class="summary-grid">
+          <article class="summary-card"><div class="summary-head"><span>处理器</span><b class="summary-icon">CPU</b></div><strong class="summary-value compact" id="hardware-cpu">读取中…</strong><small id="hardware-cores">—</small></article>
+          <article class="summary-card"><div class="summary-head"><span>内存</span><b class="summary-icon blue">RAM</b></div><strong class="summary-value" id="hardware-memory">—</strong><small id="memory-free">可用 —</small></article>
+          <article class="summary-card"><div class="summary-head"><span>显卡</span><b class="summary-icon amber">GPU</b></div><strong class="summary-value compact" id="hardware-gpu">检测中…</strong><small id="gpu-memory">—</small></article>
+        </div>
+        <div class="section-heading"><div><h2>本地引擎</h2><p>对话引擎与图像/视频共用引擎分别安装和管理。</p></div><a class="text-link" href="#run">打开运行管理 →</a></div>
+        <section class="engine-grid" id="overview-engines"></section>
+        <div class="two-col overview-lower"><article class="card"><h2>本机资源</h2><p class="muted">最近采样；详情见“监测”。</p><div class="metric-line"><span>CPU</span><b id="overview-cpu">—</b><div class="meter"><i id="overview-cpu-bar"></i></div></div><div class="metric-line"><span>内存</span><b id="overview-ram">—</b><div class="meter blue-meter"><i id="overview-ram-bar"></i></div></div></article><article class="card"><h2>快速开始</h2><p>1. 安装 llama.cpp 对话引擎</p><p>2. 导入本地 GGUF 或从 Hugging Face 下载</p><p>3. 在“运行”启动模型，然后打开“对话”</p><a class="button primary" href="#models">管理模型</a></article></div>
+      </section>
+
+      <section class="page" id="page-models" data-title="模型">
+        <div class="page-intro"><div><div class="eyebrow">MODEL LIBRARY</div><h1>模型</h1><p class="intro-copy">管理本地 GGUF 对话模型，或从 Hugging Face 查找并下载。大文件会占用磁盘空间。</p></div><button class="button secondary" id="pick-model">导入本地 GGUF</button></div>
+        <div class="tabs"><button class="tab active" data-model-tab="recommended">推荐模型</button><button class="tab" data-model-tab="installed">已安装 <span id="model-count">0</span></button><button class="tab" data-model-tab="media">画图 / 视频模型</button><button class="tab" data-model-tab="download">搜索 Hugging Face</button></div>
+        <div id="models-recommended" class="recommend-grid"></div>
+        <div id="models-installed" class="model-list card" hidden><div class="empty-state">正在读取本地模型…</div></div>
+        <div id="models-media" class="card model-info-panel" hidden><div class="model-panel-heading"><div><h2>画图 / 视频模型</h2><p>此版本尚未接入图像/视频权重管理与生成流程；不会把聊天 GGUF 误显示成可用的创作模型。</p></div><a class="button secondary" href="#image">查看画图状态</a></div><div class="empty-state"><strong>创作模型管理尚未接入</strong><p>运行页可以管理共用的 stable-diffusion.cpp 引擎，但引擎安装不等于模型权重已安装。模型文件格式、组件识别和生成流程接入后会在此处管理。</p><a class="button secondary" href="#run">管理创作引擎</a></div></div>
+        <div id="models-download" class="card" hidden>
+          <form id="model-search-form" class="search-row"><input id="model-search-query" value="Qwen3 GGUF" minlength="2" maxlength="120" placeholder="搜索模型仓库，例如 Qwen3 GGUF" required /><button class="button primary" type="submit">搜索</button></form>
+          <p class="muted tiny">搜索和下载会访问 huggingface.co。下载前可查看具体量化文件和文件大小；请自行确认模型许可证。</p>
+          <div id="hf-results" class="hf-results"><div class="empty-state">输入关键词搜索 GGUF 仓库。</div></div>
+          <div id="hf-files" class="hf-files" hidden></div>
+        </div>
+        <div class="notice"><strong>说明</strong><span>目前模型管理覆盖 GGUF 聊天模型；stable-diffusion.cpp 的画图/视频权重格式和下载流程尚未接入。</span></div>
+      </section>
+
+      <section class="page" id="page-run" data-title="运行">
+        <div class="page-intro"><div><div class="eyebrow">RUNTIME CONTROL</div><h1>运行管理</h1><p class="intro-copy">选择本机已导入或下载的 GGUF 模型，再配置当前 llama-server 版本实际支持的选项。</p></div><button class="button secondary" id="refresh-engines">刷新引擎状态</button></div>
+        <div class="run-model-toolbar"><label class="sr-only" for="run-model-select">已安装模型</label><select id="run-model-select" aria-label="选择已安装模型"><option value="">选择已安装模型…</option></select><a class="button secondary" href="#models">管理模型</a></div>
+        <div class="run-layout">
+          <section class="card run-resource-card">
+            <div><div class="eyebrow">LOCAL RESOURCE PLAN</div><h2>自动分层规划</h2><p id="run-plan-summary" class="muted">选择一个已安装模型后查看本机资源估算。</p></div>
+            <div class="resource-plan">
+              <article class="resource-tile gpu-plan"><div><strong>显卡 · 本地推理路径</strong><span id="run-gpu-value">—</span></div><div class="meter"><i id="run-gpu-bar"></i></div><small id="run-gpu-note">当前 Windows x64 安装路径为 CPU 版本；不向 GPU 传层数。</small></article>
+              <article class="resource-tile ram-plan"><div><strong>内存 · 模型映射</strong><span id="run-ram-value">—</span></div><div class="meter blue-meter"><i id="run-ram-bar"></i></div><small id="run-ram-note">读取模型大小与系统可用内存后估算；实际使用量会随上下文变化。</small></article>
+              <article class="resource-tile disk-plan"><div><strong>硬盘 · 按需读取</strong><span id="run-disk-value">—</span></div><div class="meter"><i id="run-disk-bar"></i></div><small id="run-disk-note">模型文件保留在本机；内存不足时映射读取可能变慢。</small></article>
+            </div>
+            <details class="run-advanced"><summary>高级：启动参数与版本能力</summary><p id="run-capability-summary" class="muted">正在检查已安装 llama-server 的 --help…</p><p id="run-effective-options" class="muted">启动时只传递当前版本在 --help 中确认支持的参数。</p><p class="muted">投机解码需要独立的草稿模型/解码配置；当前模型管理未接入草稿模型，因此不提供假开关。</p></details>
+          </section>
+          <section class="card run-options-card">
+            <fieldset class="context-options"><legend>上下文长度 <span id="context-current-label">· 自动</span></legend><div class="context-choice-grid">
+              <label><input type="radio" name="run-context" value="auto" checked /><span>自动</span></label>
+              <label><input type="radio" name="run-context" value="8192" /><span>8K</span></label>
+              <label><input type="radio" name="run-context" value="16384" /><span>16K</span></label>
+              <label><input type="radio" name="run-context" value="32768" /><span>32K</span></label>
+              <label><input type="radio" name="run-context" value="65536" /><span>64K</span></label>
+            </div><small>上下文越长，内存占用越高。“自动”不强制设置 --ctx-size，使用当前服务器和模型默认值。</small></fieldset>
+            <div class="option-row disabled-option"><div><strong>思考模式</strong><small id="thinking-mode-note">不可强制切换：由模型模板/服务器默认值决定；当前无法可靠识别模型是否支持。</small></div><label class="switch" title="未可靠识别模型能力前不可用"><input type="checkbox" id="thinking-mode" disabled /><span></span></label></div>
+            <div class="option-row"><div><strong>Flash Attention</strong><small id="flash-capability-note">自动遵循服务器默认值</small></div><select id="flash-attention" aria-label="Flash Attention 设置"><option value="auto">自动</option><option value="on">开启</option><option value="off">关闭</option></select></div>
+            <div class="option-row"><div><strong>KV 缓存 Q8</strong><small id="kv-capability-note">降低缓存内存占用；可能影响速度</small></div><label class="switch"><input type="checkbox" id="kv-cache-q8" /><span></span></label></div>
+            <div class="option-row"><div><strong>崩溃后自动重启</strong><small>检测到异常退出时最多自动重启一次；关闭应用会停止服务</small></div><label class="switch"><input type="checkbox" id="auto-restart" /><span></span></label></div>
+            <div class="option-row"><div><strong>局域网访问</strong><small id="lan-access-note">默认关闭、仅绑定 127.0.0.1。开启后同一私有网段设备可访问未认证 API；只在可信网络开启，且仅绑定一个私有 IPv4 地址。</small></div><label class="switch"><input type="checkbox" id="lan-access" /><span></span></label></div>
+            <div class="estimate-box"><div><small>预计生成速度 <em>（估算）</em></small><strong id="estimated-speed">—</strong></div><div><small>首次加载 <em>（估算）</em></small><strong id="estimated-load">—</strong></div><p>仅为粗略估算，不是本机实测；实际表现受模型量化、上下文、CPU 与存储速度影响。</p></div>
+            <div class="run-actions"><button class="button primary" id="start-model" disabled>启动模型</button><button class="button danger" id="stop-model" disabled>停止</button></div>
+            <div id="run-status" class="muted small">模型未启动</div><div id="run-error" class="error-box" hidden></div>
+          </section>
+        </div>
+        <div class="section-heading"><div><h2>推理引擎</h2><p>对话模型与图像/视频引擎分别管理；此处按钮可检查或安装官方运行时。</p></div></div><div id="engine-cards" class="engine-grid"></div>
+        <div class="notice"><strong>兼容提示</strong><span>运行页选项会在启动前与已安装 llama-server 的 --help 对照；不支持的项目会禁用或提示，不会传入虚构参数。</span></div>
+      </section>
+
+      <section class="page chat-page" id="page-chat" data-title="对话">
+        <div class="chat-layout">
+          <aside class="chat-sidebar" id="chat-sidebar">
+            <div class="chat-sidebar-top"><button class="button secondary full" id="new-chat">＋ 新对话</button></div>
+            <input id="chat-filter" type="search" placeholder="搜索对话或消息" aria-label="搜索对话或消息" />
+            <label class="sr-only" for="chat-filter-mode">筛选对话</label><select id="chat-filter-mode" class="chat-filter-mode"><option value="all">全部对话</option><option value="recent">最近 7 天</option><option value="pinned">已置顶</option></select>
+            <div id="chat-sessions" class="chat-sessions" aria-label="对话历史"></div>
+          </aside>
+          <div class="chat-main">
+            <div class="chat-toolbar">
+              <div class="chat-model-picker"><label class="sr-only" for="chat-model-select">选择本地模型</label><select id="chat-model-select" aria-label="选择本地 GGUF 模型"><option value="">本地模型：未选择</option></select><span id="chat-model-state" class="chat-runtime-state">未启动</span><span id="chat-local-port" class="chat-offline-state"><i></i>本机运行 · 不联网</span></div>
+              <div class="chat-toolbar-actions"><button class="button secondary icon-button" id="toggle-chat-sidebar" type="button" aria-label="收起对话列表" title="收起对话列表">◧</button><button class="text-button" id="clear-chat" type="button">清空当前对话</button></div>
+            </div>
+            <div id="chat-messages" class="chat-messages" aria-live="polite"><div class="welcome"><div class="welcome-mark">◇</div><h2>有什么可以帮你？</h2><p>模型完全在你的电脑上运行；对话内容不会上传。选择并启动一个本地 GGUF 模型后即可聊天。</p><a class="button secondary" href="#run">前往运行管理</a></div></div>
+            <form id="chat-form" class="chat-compose">
+              <div id="chat-attachments" class="chat-attachments" aria-live="polite"></div>
+              <textarea id="chat-input" rows="3" maxlength="30000" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）" disabled></textarea>
+              <div class="compose-toolbar">
+                <input id="chat-file-input" class="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log,.yaml,.yml,.toml,.xml,.html,.css,.js,.ts,.tsx,.jsx,.rs,.py,.go,.java,.c,.cpp,.h,.sql" />
+                <button class="chat-tool-button" id="attach-files" type="button" title="添加纯文本或代码文件；仅在本机读取，不上传">⌁ 附件</button>
+                <details class="tool-menu"><summary class="chat-tool-button">工具 <b>8</b>⌄</summary><div class="tool-menu-panel"><p>此版本未接入工具调用协议，以下工具不可用：</p><button type="button" disabled title="未接入网页搜索工具/API">网页搜索 · 未接入</button><button type="button" disabled title="没有安全范围受限的文件读取工具">文件读取 · 未接入</button><button type="button" disabled title="不会执行模型生成的代码">代码执行 · 未接入</button><button type="button" disabled title="没有结构化数据分析工具">数据分析 · 未接入</button><button type="button" disabled title="不会执行终端命令">终端命令 · 未接入</button><button type="button" disabled title="没有本地知识库检索后端">知识库 · 未接入</button><button type="button" disabled title="没有联网搜索后端">联网搜索 · 未接入</button><button type="button" disabled title="没有插件调用协议">插件 · 未接入</button></div></details>
+                <button class="chat-tool-button unavailable" type="button" disabled title="未接入经过审批的电脑操作能力；不会控制鼠标、键盘或修改文件">▣ 操作电脑</button>
+                <button class="chat-tool-button unavailable" type="button" disabled title="没有图像模型权重或生成接口">▧ 画图</button>
+                <button class="chat-tool-button unavailable" type="button" disabled title="没有视频模型、任务队列或导出接口">▻ 视频</button>
+                <button class="chat-tool-button unavailable" type="button" disabled title="推理服务没有独立思考模式开关；由模型模板决定">♧ 思考：关</button>
+                <details class="chat-settings"><summary class="chat-tool-button">⚙ 对话设置</summary><div class="chat-settings-panel"><label for="chat-temperature">回答随机度 <strong id="chat-temperature-value">0.7</strong></label><input id="chat-temperature" type="range" min="0" max="1.5" step="0.1" value="0.7" /><label class="history-setting"><input id="chat-include-history" type="checkbox" checked />携带最近对话作为上下文（最多 60 条消息）</label><small>使用 llama-server 非流式文本接口。设置保存在本机。</small></div></details>
+                <button class="button primary send-chat-button" id="send-chat" type="submit" disabled>发送 ↑</button>
+              </div>
+              <div class="chat-capability-note">工具调用、电脑操作、画图/视频和思考开关因后端尚无对应能力而禁用；附件仅支持本机读取的 UTF-8 文本/代码，不支持图片或 PDF。</div>
+              <div class="compose-footnote"><span class="muted tiny" id="chat-hint">先在“运行”页面启动模型</span><span class="muted tiny">本机保存 · 非流式回复</span></div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="page agent-page" id="page-agent" data-title="Agent">
+        <div class="agent-layout">
+          <aside class="agent-taskbar" aria-label="Agent 任务列表">
+            <button class="button secondary agent-new-task" id="agent-new-task" type="button">＋ 新任务</button>
+            <div class="agent-list-heading">任务 <span id="agent-task-count">0</span></div>
+            <div id="agent-task-list" class="agent-task-list" role="list"></div>
+            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>文件读写只限所选文件夹。每条命令、覆盖或删除操作都会先询问；命令仍可能影响工作区外内容。</span></div>
+          </aside>
+          <section class="agent-workbench" aria-label="Agent 工作区">
+            <header class="agent-toolbar">
+              <button class="agent-model-button" id="agent-model-button" type="button" title="前往运行页面管理模型"><i id="agent-model-dot"></i><span id="agent-model-label">本地模型：检查中</span><b>⌄</b></button>
+              <div class="agent-workspace-picker"><span>工作文件夹</span><strong id="agent-workspace-label">尚未选择</strong><button class="button secondary" id="agent-choose-workspace" type="button">更换</button></div>
+            </header>
+            <div class="agent-stage">
+              <div id="agent-welcome" class="agent-welcome">
+                <div class="agent-welcome-mark">▣</div>
+                <h1>交给 Agent 一个任务</h1>
+                <p>它会在工作文件夹里规划、建文件、写代码；运行命令前会征求你的批准。</p>
+                <div class="agent-suggestions" aria-label="示例任务">
+                  <button type="button" data-agent-suggestion="做一个番茄钟网页，打开 index.html 就能用">做一个番茄钟网页，打开 index.html 就能用</button>
+                  <button type="button" data-agent-suggestion="写一个 Python 脚本，把这个文件夹里的图片批量压缩到 1080p">写个 Python 脚本，把文件夹里的图片批量压缩到 1080p</button>
+                  <button type="button" data-agent-suggestion="读一下这个项目，写一份 README.md 说明怎么运行">读一下这个项目，写一份 README.md 说明怎么运行</button>
+                  <button type="button" data-agent-suggestion="整理这个文件夹：按文件类型分到不同子文件夹">整理这个文件夹：按文件类型分到不同子文件夹</button>
+                </div>
+                <p class="agent-long-task-note">任务由本机已启动的模型处理。文件工具只访问已选工作区；命令、覆盖与删除会显示具体操作并等待批准。</p>
+              </div>
+              <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
+              <section id="agent-approval" class="agent-approval" aria-live="polite" hidden></section>
+            </div>
+            <form id="agent-form" class="agent-composer">
+              <div id="agent-attachments" class="agent-attachments" aria-live="polite"></div>
+              <label class="sr-only" for="agent-input">描述要交给 Agent 的任务</label>
+              <textarea id="agent-input" rows="2" maxlength="12000" placeholder="先在“运行”页面启动本地模型，并选择工作文件夹"></textarea>
+              <div class="agent-compose-footer">
+                <input id="agent-file-input" class="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log,.yaml,.yml,.toml,.xml,.html,.css,.js,.ts,.tsx,.jsx,.rs,.py,.go,.java,.c,.cpp,.h,.sql" />
+                <button class="agent-tool-button" id="agent-attach" type="button">⌁ 附件</button>
+                <label class="sr-only" for="agent-scope">工作区范围</label>
+                <select id="agent-scope" class="agent-scope" aria-label="工作区范围"><option value="workspace">仅限工作区</option></select>
+                <button class="agent-tool-button agent-media-button" id="agent-media" type="button" title="跳转到画图页面；图像和视频生成功能尚未接入">画图 / 视频</button>
+                <span class="agent-safety-copy">文件工具仅限工作区；命令可能影响外部内容，均先询问</span>
+                <button class="button primary agent-send" id="agent-send" type="submit" aria-label="发送任务">↑</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-schedule" data-title="定时"><div class="page-intro"><div><div class="eyebrow">SCHEDULED TASKS</div><h1>定时任务</h1><p class="intro-copy">计划任务和推送依赖桌面进程持续运行；当前版本没有后台调度器。</p></div></div><div class="card feature-locked"><div class="feature-symbol">◷</div><h2>定时执行尚未接入</h2><p>可见的任务列表、时间计划、错过任务补跑和 Telegram/微信等推送通道都尚未实现。应用关闭时不会在后台执行任务。</p></div></section>
+
+      <section class="page" id="page-image" data-title="画图"><div class="page-intro"><div><div class="eyebrow">IMAGE GENERATION</div><h1>画图</h1><p class="intro-copy">画图和视频共用 stable-diffusion.cpp 引擎，但需要各自的模型权重。</p></div><button class="button secondary" data-jump="run">管理创作引擎</button></div><div class="notice large-notice"><strong>共享的创作引擎</strong><span>先在“运行”页面检查并安装 stable-diffusion.cpp；图像生成界面、Stable Diffusion 权重管理和生成参数尚未接入。引擎安装不会自动下载模型，也不会生成图片。</span></div><div class="card feature-locked"><h2>当前状态</h2><p>运行时与权重分别管理。等待后续接入兼容格式后，此处会提供提示词、尺寸、步数和作品保存位置。</p></div></section>
+
+      <section class="page" id="page-video" data-title="视频"><div class="page-intro"><div><div class="eyebrow">VIDEO GENERATION</div><h1>视频</h1><p class="intro-copy">与画图共用 stable-diffusion.cpp 运行时，不重复安装引擎。</p></div><button class="button secondary" data-jump="run">管理创作引擎</button></div><div class="notice large-notice"><strong>视频生成尚未接入</strong><span>当前没有视频生成模型、任务队列、预览或导出流程。共用的 stable-diffusion.cpp 安装器不代表已经支持视频生成。</span></div></section>
+
+      <section class="page" id="page-monitor" data-title="监测"><div class="page-intro"><div><div class="eyebrow">SYSTEM MONITOR</div><h1>系统监测</h1><p class="intro-copy">约每 2 秒刷新；显示最近 2 分钟的 CPU 与内存使用率，只读取系统信息。</p></div><button class="button secondary" id="monitor-refresh">立即刷新</button></div><div class="summary-grid two-metrics"><article class="summary-card"><div class="summary-head"><span>CPU</span><strong id="monitor-cpu-value">—</strong></div><div class="meter"><i id="monitor-cpu-bar"></i></div><small id="monitor-cpu-name">—</small></article><article class="summary-card"><div class="summary-head"><span>内存</span><strong id="monitor-ram-value">—</strong></div><div class="meter blue-meter"><i id="monitor-ram-bar"></i></div><small id="monitor-ram-text">—</small></article></div><div class="card chart-card"><h2>最近 2 分钟</h2><canvas id="system-chart" width="1200" height="300" aria-label="CPU 和内存使用曲线"></canvas><div class="legend"><span><i class="legend-cpu"></i>CPU</span><span><i class="legend-ram"></i>内存</span></div></div><div class="card"><h2>本地推理服务</h2><div class="metadata-row"><span>监听地址</span><strong id="monitor-api">127.0.0.1:8686</strong></div><p class="muted tiny">默认仅绑定 127.0.0.1；只有开启运行页的局域网访问后，才绑定一个私有 IPv4 地址。</p></div></section>
+
+      <section class="page" id="page-settings" data-title="设置"><div class="page-intro"><div><div class="eyebrow">PREFERENCES</div><h1>设置</h1><p class="intro-copy">配置模型和作品目录、界面外观与本地 API 端口。</p></div></div><form id="settings-form" class="settings-stack"><article class="card"><h2>模型存放</h2><label for="settings-model-dir">模型目录</label><div class="input-with-button"><input id="settings-model-dir" autocomplete="off" /><button class="button secondary" type="button" id="choose-model-dir">选择目录</button></div><p class="muted tiny">新导入或下载的 GGUF 文件存放在这里；更改目录不会搬移已有模型。</p></article><article class="card"><h2>界面与服务</h2><label for="settings-appearance">外观</label><select id="settings-appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><label for="settings-port">本地 API 端口</label><input id="settings-port" type="number" min="1024" max="65535" /><p class="muted tiny">默认 8686；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。</p></article><div class="settings-actions"><button class="button primary" type="submit">保存设置</button><span class="muted tiny" id="settings-status"></span></div></form><div class="notice"><strong>本地数据</strong><span>对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。</span></div></section>
+    </main>
+  </div>
+</body>
+</html>

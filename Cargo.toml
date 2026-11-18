@@ -1,10 +1,31 @@
 [package]
 name = "llama-server-launcher-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Minimal Rust example for launching llama-server from JSON configuration"
+description = "Minimal Rust launcher with verified local inference runtime installers"
 license = "MIT"
 
+[features]
+default = []
+desktop = ["dep:tauri", "dep:tauri-plugin-dialog"]
+
+[[bin]]
+name = "local-engine-manager"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]
+
 [dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+sysinfo = "0.35"
+tauri = { version = "2.12.6", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[build-dependencies]
+tauri-build = "2.7.5"
+
+[dev-dependencies]
+tempfile = "3"

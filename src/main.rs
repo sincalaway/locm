@@ -1,3 +1,5 @@
+mod engine_manager;
+
 use serde::Deserialize;
 use std::{
     env,
@@ -17,13 +19,13 @@ struct EngineConfig {
     n_gpu_layers: i32,
 }
 
-type AppResult<T> = Result<T, Box<dyn Error>>;
+type AppResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("启动失败：{error}");
+            eprintln!("运行失败：{error}");
             ExitCode::FAILURE
         }
     }
@@ -32,11 +34,24 @@ fn main() -> ExitCode {
 fn run() -> AppResult<ExitCode> {
     let mut args = env::args_os();
     let _program = args.next();
-    let config_arg = args.next().unwrap_or_else(|| OsString::from("engine.json"));
+    let first = args.next();
+    if first.as_deref() == Some(std::ffi::OsStr::new("engine")) {
+        engine_manager::run_cli(args.collect())?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if first.as_deref() == Some(std::ffi::OsStr::new("sd-engine")) {
+        // 保留最初的 media-only 命令草案作为兼容别名。
+        let mut legacy = vec![OsString::from("install"), OsString::from("media")];
+        legacy.extend(args);
+        engine_manager::run_cli(legacy)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let config_arg = first.unwrap_or_else(|| OsString::from("engine.json"));
     if args.next().is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "用法：llama-server-launcher-rs [engine.json 路径]",
+            "用法：llama-server-launcher-rs [engine.json 路径]，或 engine <status|latest|install|update>",
         )
         .into());
     }

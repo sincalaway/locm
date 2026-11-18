@@ -32,7 +32,7 @@ CPU x64 是目前唯一自动选择的硬件变体；CUDA、Vulkan、ARM64 和�
 cargo run --features desktop --bin local-engine-manager
 ```
 
-桌面页会自动读取处理器、逻辑核心数、内存和 NVIDIA/Windows 显卡信息；可分别检查和安装两套官方引擎，安装进度覆盖下载、SHA-256 校验和安全解压。llama.cpp 预览版会明确标注。stable-diffusion.cpp 仍是图像与视频共用的一份运行时。
+桌面页会自动读取处理器、逻辑核心数、内存和 NVIDIA/Windows 显卡信息；可分别检查和安装两套官方引擎，安装进度覆盖下载、SHA-256 校验和安全解压。llama.cpp 预览版会明确标注。stable-diffusion.cpp 仍是图像与视频共用的一份运行时。画图和视频页可查看共享引擎状态、跳转管理或打开各自作品文件夹，并链接到 Hugging Face 的外部模型目录；应用暂不识别、导入或下载这些创作权重，提示词、生成控件、画布编辑和视频生成均未接入。
 
 目前桌面 UI 还支持：导入本地 GGUF、搜索 Hugging Face GGUF 仓库并下载选定文件；配置模型目录、外观和本地 API 端口；选择已安装模型并启动/停止 `llama-server`；按当前服务器 `--help` 动态启用上下文、Flash Attention 与 Q8 K/V 缓存参数；可选在崩溃后重启一次。Agent 可用已启动的本地模型处理任务、查看工作区文件、在工作区内新建文件，并把任务记录保存在本机 WebView 存储中。Agent 读取/写入只限选定工作区，拒绝符号链接和 `.git` 元数据；覆盖、删除和命令执行必须逐项批准。命令以独立程序和参数启动，工作目录设为工作区，但程序仍以当前用户权限运行并继承环境变量，可能访问工作区以外的文件或网络。默认 API 只绑定 `127.0.0.1`；用户开启局域网访问时，仅尝试绑定操作系统选定的私有 IPv4 地址，不绑定所有网卡或公网地址。运行页还展示速度、首次加载和资源占用的粗略估算（不是实测）。Hugging Face 搜索和下载会联网；聊天和 Agent 模型请求只发往本地服务。
 
@@ -40,7 +40,7 @@ cargo run --features desktop --bin local-engine-manager
 
 桌面安装器当前仅支持 Windows x64 CPU 官方引擎包；其他平台可查看状态，但自动安装按钮不可用。Tauri 2 依赖操作系统 WebView（Windows 使用 WebView2；Linux 构建需要 GTK/WebKitGTK 开发库）。原 CLI 仍是默认构建目标；只有显式打开 `desktop` feature 才构建桌面窗口。
 
-**明确尚未实现：** 后台定时任务和通知、stable-diffusion.cpp 模型权重管理以及画图/视频生成、GPU 加速选择、流式聊天、可分发安装器。Agent 依赖本机模型按 JSON 工具协议返回动作；如果模型不遵循协议，任务会暂停而不会模拟执行。桌面程序已做 Windows x64 交叉类型检查，但尚未在 Windows 实机运行。
+**明确尚未实现：** 后台定时任务和通知、stable-diffusion.cpp 模型权重管理以及画图/视频生成、GPU 加速选择、流式聊天、可分发安装器。Agent 依赖本机模型按 JSON 工具协议返回动作；如果模型不遵循协议，任务会暂停而不会模拟执行。Windows x64 的 Tauri 桌面 Release 已交叉构建为 GUI 子系统 EXE；本次没有 Windows 实机可用，因此未验证实际启动或逐个按钮。
 
 ## 使用命令
 

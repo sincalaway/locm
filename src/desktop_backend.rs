@@ -486,6 +486,42 @@ pub fn pick_directory(app: &AppHandle) -> Result<Option<String>, String> {
         .map_err(|error| format!("无法读取所选目录：{error}"))
 }
 
+pub fn open_creations_directory(app: &AppHandle, kind: &str) -> Result<String, String> {
+    let subdirectory = match kind {
+        "image" => "images",
+        "video" => "videos",
+        _ => return Err("作品类型无效；仅支持 image 或 video".to_string()),
+    };
+    let directory = app_data_dir(app)?.join("creations").join(subdirectory);
+    fs::create_dir_all(&directory).map_err(|error| format!("无法创建作品目录：{error}"))?;
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| format!("无法确认作品目录：{error}"))?;
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("explorer.exe");
+        command.arg(&directory);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(&directory);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(&directory);
+        command
+    };
+    command
+        .spawn()
+        .map_err(|error| format!("无法打开作品目录：{error}"))?;
+    Ok(directory.display().to_string())
+}
+
 fn hf_client() -> Result<Client, String> {
     let allow = |attempt: reqwest::redirect::Attempt<'_>| {
         let url = attempt.url();

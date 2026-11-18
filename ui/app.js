@@ -13,6 +13,8 @@
     settings: null,
     hardware: null,
     engines: new Map(),
+    mediaInstallSupported: false,
+    mediaInstallBusy: false,
     models: [],
     pendingRunModel: null,
     runtime: { running: false, port: 8686, modelName: null },
@@ -61,6 +63,7 @@
     $("#page-title").textContent = $( `#page-${safePage}` ).dataset.title || safePage;
     if (safePage === "models") loadModels();
     if (safePage === "run") { loadEngines(); refreshRuntime(); loadModels(); loadRunCapabilities(true); }
+    if (safePage === "image" || safePage === "video") renderMediaEngineBanners();
     if (safePage === "chat") { renderChat(); refreshRuntime(); }
     if (safePage === "monitor") { drawChart(); refreshSystem(); }
     if (safePage === "settings") loadSettings();
@@ -350,7 +353,8 @@
     try {
       const statuses = await invoke("engine_statuses");
       state.engines = new Map(statuses.map((status) => [status.engine, status]));
-      const [supported] = await Promise.all([invoke("engine_install_supported")]);
+      state.mediaInstallSupported = await invoke("engine_install_supported");
+      const supported = state.mediaInstallSupported;
       const engines = statuses.map((status) => ({ engine: status.engine }));
       $("#engine-cards").innerHTML = engines.map((engine) => engineCardMarkup(engine, state.engines.get(engine.engine))).join("");
       $("#overview-engines").innerHTML = engines.map((engine) => engineCardMarkup(engine, state.engines.get(engine.engine))).join("");
@@ -364,8 +368,79 @@
           button.textContent = "仅支持 Windows x64 安装";
         });
       }
+      renderMediaEngineBanners();
     } catch (error) {
       [$("#engine-cards"), $("#overview-engines")].forEach((box) => { box.innerHTML = `<div class="error-box">无法读取引擎状态：${escapeText(error)}</div>`; });
+      renderMediaEngineBanners(String(error));
+    }
+  }
+
+  function renderMediaEngineBanners(loadError = "") {
+    const engineId = "stable-diffusion.cpp";
+    const known = state.engines.has(engineId);
+    const versions = state.engines.get(engineId)?.installedVersions || [];
+    const installed = versions.length > 0;
+    ["image", "video"].forEach((page) => {
+      const status = $(`#${page}-engine-status`);
+      const description = $(`#${page}-engine-description`);
+      const install = $(`#${page}-install-engine`);
+      const manage = $(`#${page}-manage-engine`);
+      const error = $(`#${page}-engine-error`);
+      if (!status || !description || !install || !manage || !error) return;
+      if (loadError) { error.textContent = `无法读取共享引擎状态：${loadError}`; error.hidden = false; }
+      else if (known) error.hidden = true;
+      if (installed) {
+        status.className = "status-pill ready";
+        status.textContent = `已安装 · ${versions.map((version) => version.tag).join("、")}`;
+        description.textContent = "画图与视频共用的 stable-diffusion.cpp 已安装。模型权重仍需单独管理；当前版本尚未接入图像/视频生成流程。";
+        install.hidden = true;
+        manage.hidden = false;
+      } else {
+        status.className = "status-pill empty";
+        status.textContent = known ? "尚未安装" : "状态未知";
+        description.textContent = "画图和视频共用 stable-diffusion.cpp，安装一次即可。引擎安装不会下载模型权重，也不代表生成能力已接入。";
+        install.hidden = false;
+        manage.hidden = true;
+        install.disabled = !known || !state.mediaInstallSupported || state.mediaInstallBusy;
+        install.textContent = !known ? "无法读取引擎状态" : (!state.mediaInstallSupported ? "仅支持 Windows x64 安装" : (state.mediaInstallBusy ? "正在安装…" : "一键安装"));
+      }
+    });
+  }
+
+  async function installMediaEngine() {
+    if (state.mediaInstallBusy) return;
+    if (!state.mediaInstallSupported) { showToast("创作引擎安装器仅支持 Windows x64", "error"); return; }
+    state.mediaInstallBusy = true;
+    let failure = "";
+    ["image", "video"].forEach((page) => {
+      const progress = $(`#${page}-engine-progress`);
+      if (progress) { progress.hidden = false; progress.textContent = "正在查询 stable-diffusion.cpp 官方版本…"; }
+      const error = $(`#${page}-engine-error`);
+      if (error) error.hidden = true;
+    });
+    renderMediaEngineBanners();
+    try {
+      const latest = await invoke("engine_latest", { engine: "media" });
+      const installedVersions = state.engines.get("stable-diffusion.cpp")?.installedVersions || [];
+      if (installedVersions.some((version) => version.tag === latest.tag)) {
+        showToast(`stable-diffusion.cpp ${latest.tag} 已安装；可在“运行”页管理版本`);
+        return;
+      }
+      if (latest.prerelease && !window.confirm("官方最新版本是预览版。是否继续安装？")) return;
+      ["image", "video"].forEach((page) => {
+        const progress = $(`#${page}-engine-progress`);
+        if (progress) progress.textContent = `正在安装 ${latest.tag}…`;
+      });
+      const statuses = await invoke("engine_install", { engine: "media", allowPrerelease: Boolean(latest.prerelease) });
+      state.engines = new Map(statuses.map((item) => [item.engine, item]));
+      showToast(`stable-diffusion.cpp ${latest.tag} 已安装；引擎尚未启动`);
+      await loadEngines();
+    } catch (error) {
+      failure = String(error);
+      showToast(`创作引擎安装失败：${error}`, "error");
+    } finally {
+      state.mediaInstallBusy = false;
+      renderMediaEngineBanners(failure);
     }
   }
 
@@ -981,6 +1056,26 @@
     $("#models-download").hidden = tab !== "download";
   }
 
+  function switchImageView(view) {
+    const canvas = view === "canvas";
+    $$("[data-image-view]").forEach((button) => {
+      const active = button.dataset.imageView === (canvas ? "canvas" : "form");
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    $("#image-form-view").hidden = canvas;
+    $("#image-canvas-view").hidden = !canvas;
+  }
+
+  async function openCreationsDirectory(kind, button) {
+    button.disabled = true;
+    try {
+      await invoke("open_creations_directory", { kind });
+      showToast(`${kind === "image" ? "画图" : "视频"}作品文件夹已打开`);
+    } catch (error) { showToast(`打开作品文件夹失败：${error}`, "error"); }
+    finally { button.disabled = false; }
+  }
+
   async function start() {
     if (!tauri?.core?.invoke || !listen) {
       $("#overview-headline").textContent = "请在桌面应用中打开";
@@ -993,6 +1088,10 @@
         const progress = event.payload;
         $$(".engine-card").filter((card) => (card.dataset.engine === "llama.cpp" ? "llama.cpp" : "stable-diffusion.cpp") === progress.engine)
           .forEach((card) => { const box = $("[data-progress]", card); box.hidden = false; box.textContent = progress.phase === "download" ? `下载中 ${progress.total ? Math.round(progress.completed / progress.total * 100) : 0}% · ${fmtBytes(progress.completed)} / ${fmtBytes(progress.total)}` : progress.phase === "verify" ? "正在校验 SHA-256…" : progress.phase === "extract" ? `安全解压 ${progress.completed} / ${progress.total}` : "安装完成"; });
+        if (progress.engine === "stable-diffusion.cpp") {
+          const message = progress.phase === "download" ? `下载中 ${progress.total ? Math.round(progress.completed / progress.total * 100) : 0}% · ${fmtBytes(progress.completed)} / ${fmtBytes(progress.total)}` : progress.phase === "verify" ? "正在校验 SHA-256…" : progress.phase === "extract" ? `安全解压 ${progress.completed} / ${progress.total}` : "安装完成";
+          ["image", "video"].forEach((page) => { const box = $(`#${page}-engine-progress`); if (box) { box.hidden = false; box.textContent = message; } });
+        }
       });
       await listen("model-progress", (event) => {
         const payload = event.payload;
@@ -1017,6 +1116,10 @@
   $("#pick-model").addEventListener("click", importLocalModel);
   $("#model-search-form").addEventListener("submit", searchHf);
   $$("[data-model-tab]").forEach((button) => button.addEventListener("click", () => switchModelTab(button.dataset.modelTab)));
+  $$("[data-image-view]").forEach((button) => button.addEventListener("click", () => switchImageView(button.dataset.imageView)));
+  $("#open-creations-directory").addEventListener("click", (event) => openCreationsDirectory("image", event.currentTarget));
+  $("#open-video-directory").addEventListener("click", (event) => openCreationsDirectory("video", event.currentTarget));
+  $$("[data-media-install]").forEach((button) => button.addEventListener("click", installMediaEngine));
   $("#start-model").addEventListener("click", startModel);
   $("#stop-model").addEventListener("click", stopModel);
   $("#run-model-select").addEventListener("change", () => { updateRunEstimates(); refreshRuntime(); });

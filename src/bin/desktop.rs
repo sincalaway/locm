@@ -234,6 +234,11 @@ fn choose_directory(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn open_creations_directory(app: AppHandle, kind: String) -> Result<String, String> {
+    desktop_backend::open_creations_directory(&app, &kind)
+}
+
+#[tauri::command]
 async fn agent_workspace_path(workspace: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         agent_workspace::canonicalize_workspace(&workspace)
@@ -749,6 +754,7 @@ fn main() {
             remove_model,
             choose_model_file,
             choose_directory,
+            open_creations_directory,
             agent_workspace_path,
             agent_list_files,
             agent_read_file,

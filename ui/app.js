@@ -71,6 +71,7 @@
   function setPage(page) {
     const safePage = document.getElementById(`page-${page}`) ? page : "overview";
     $$(".page").forEach((view) => view.classList.toggle("active", view.id === `page-${safePage}`));
+    document.body.dataset.page = safePage;
     $$(".nav-item").forEach((item) => {
       const active = item.dataset.page === safePage;
       item.classList.toggle("active", active);
@@ -427,10 +428,12 @@
     const chatEngine = state.engines.get("llama.cpp");
     const engineReady = Boolean(chatEngine?.installedVersions?.length);
     const modelCount = state.models.length;
+    const activeStep = !hardwareReady ? "hardware" : !engineReady ? "engine" : modelCount === 0 ? "models" : null;
     const updateStep = (name, complete, message) => {
       const step = $(`[data-quick-step="${name}"]`);
       if (!step) return;
       step.classList.toggle("complete", complete);
+      step.classList.toggle("active", name === activeStep);
       const number = step.querySelector(".quick-step-number");
       number.textContent = complete ? "✓" : String(name === "hardware" ? 1 : name === "engine" ? 2 : 3);
       step.querySelector("small").textContent = message;

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "本地 AI 引擎管理器",
+  "productName": "本地 AI 工作台",
   "version": "0.2.1",
   "identifier": "app.localai.engine-manager",
   "mainBinaryName": "local-engine-manager",
@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "本地 AI 引擎管理器",
+        "title": "本地 AI 工作台",
         "width": 1120,
         "height": 760,
         "minWidth": 640,

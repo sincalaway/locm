@@ -240,3 +240,48 @@ html,body{width:100%;min-width:0}
 
 /* Keep the chat workspace inside the page's actual content width at every breakpoint. */
 .chat-layout{margin-left:0;margin-right:0}
+
+/* Three-step local setup flow observed in LocModel's first-run overview. */
+.quick-start-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:0 0 16px;border:1px solid var(--line);border-radius:13px;background:var(--surface);box-shadow:var(--shadow)}
+.quick-start-step{display:flex;min-width:0;align-items:center;gap:10px;padding:13px 15px;border-right:1px solid var(--line)}
+.quick-start-step:last-child{border-right:0}
+.quick-step-number{display:grid;width:25px;height:25px;flex:0 0 auto;place-items:center;border-radius:50%;background:var(--surface-alt);color:var(--muted);font-size:10px;font-weight:750}
+.quick-start-step.complete .quick-step-number{background:var(--green-soft);color:var(--green-dark)}
+.quick-start-step>div{display:grid;min-width:0;flex:1;gap:3px}
+.quick-start-step strong{font-size:10px}
+.quick-start-step small{color:var(--muted);font-size:8px;line-height:1.4;overflow-wrap:anywhere}
+.quick-start-step .text-button{flex:0 0 auto;font-size:9px;text-decoration:underline;text-underline-offset:2px}
+@media(max-width:900px){.quick-start-steps{grid-template-columns:1fr}.quick-start-step{border-right:0;border-bottom:1px solid var(--line)}.quick-start-step:last-child{border-bottom:0}}
+
+.monitor-process-card{margin:12px 0;padding:15px}
+.monitor-process-list{display:grid;gap:7px;margin-top:10px}
+.monitor-process-list>p{margin:0;line-height:1.6}
+.monitor-process-row{display:flex;min-width:0;align-items:baseline;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-alt)}
+.monitor-process-row strong{min-width:0;font-size:10px;overflow-wrap:anywhere}
+.monitor-process-row small{color:var(--muted);font-size:8px;text-align:right;overflow-wrap:anywhere}
+@media(max-width:700px){.monitor-process-row{align-items:flex-start;flex-direction:column;gap:4px}.monitor-process-row small{text-align:left}}
+
+.schedule-layout{display:grid;grid-template-columns:minmax(260px,.85fr) minmax(0,1.15fr);gap:13px;align-items:start;margin-top:13px}
+.schedule-form{display:grid;gap:9px;align-content:start}
+.schedule-form h2,.schedule-list-heading h2{margin:0;font-size:14px}
+.schedule-form label{margin-top:2px;font-size:9px;font-weight:650}
+.schedule-form textarea{width:100%;min-height:120px;background:var(--surface-alt);font-size:10px}
+.schedule-form>p{margin:0;line-height:1.55}
+.schedule-list-card{min-width:0}
+.schedule-list-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.schedule-list-heading p{margin:5px 0 0;line-height:1.5}
+.schedule-list{display:grid;gap:9px;margin-top:12px}
+.schedule-task{display:grid;min-width:0;gap:8px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--surface-alt)}
+.schedule-task-heading{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:10px}
+.schedule-task-heading strong{min-width:0;overflow-wrap:anywhere;font-size:11px}
+.schedule-status{flex:0 0 auto;padding:4px 7px;border-radius:20px;font-size:8px;font-weight:700}
+.schedule-status.enabled{background:#e9f5ef;color:#16755d}.schedule-status.paused{background:var(--surface);color:var(--muted)}
+.schedule-task-timing{margin:0;line-height:1.5}
+.schedule-task-prompt{margin:0;padding:8px;border-radius:7px;background:var(--surface);font-size:9px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.schedule-last-result{padding:8px;border-radius:7px;font-size:8px;line-height:1.5;overflow-wrap:anywhere}
+.schedule-last-result.success{background:#edf7f1;color:#28684f}.schedule-last-result.failed{background:#fff4ef;color:#965144}
+.schedule-last-result.skipped{background:var(--surface);color:var(--muted)}
+.schedule-last-result p{margin:3px 0 0;white-space:pre-wrap}
+.schedule-history{font-size:8px;color:var(--muted)}.schedule-history summary{cursor:pointer}.schedule-history ul{display:grid;gap:5px;padding-left:17px;line-height:1.5}.schedule-history li{overflow-wrap:anywhere}
+.schedule-task-actions{display:flex;justify-content:flex-end;gap:7px}
+@media(max-width:900px){.schedule-layout{grid-template-columns:1fr}}

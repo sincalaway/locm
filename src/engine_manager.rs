@@ -1,3 +1,4 @@
+use flate2::read::GzDecoder;
 use reqwest::{
     blocking::{Client, Response},
     redirect::Policy,
@@ -16,6 +17,7 @@ use std::{
     thread,
     time::Duration,
 };
+use tar::Archive;
 use zip::ZipArchive;
 
 const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -60,9 +62,19 @@ impl EngineKind {
     }
 
     fn asset_suffix(self) -> &'static str {
-        match self {
-            Self::Chat => "-bin-win-cpu-x64.zip",
-            Self::Media => "-bin-win-cpu-x64.zip",
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            return match self {
+                Self::Chat => "-bin-ubuntu-x64.tar.gz",
+                Self::Media => "-bin-Linux-Ubuntu-26.04-x86_64.zip",
+            };
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            match self {
+                Self::Chat => "-bin-win-cpu-x64.zip",
+                Self::Media => "-bin-win-cpu-x64.zip",
+            }
         }
     }
 
@@ -242,11 +254,14 @@ fn print_help() {
 }
 
 fn ensure_supported_install_platform() -> AppResult<()> {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+    if cfg!(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )) {
         Ok(())
     } else {
         Err(invalid(
-            "当前 MVP 仅安装 Windows x64 CPU 官方构建；请在目标 Windows x64 电脑运行安装命令",
+            "当前仅支持 Windows x64 或 Linux x86_64 CPU 官方构建；请在受支持的平台运行安装命令",
         ))
     }
 }
@@ -356,7 +371,7 @@ pub fn latest_release(kind: EngineKind, permit_prerelease: bool) -> AppResult<Re
             ""
         };
         invalid(format!(
-            "在官方 {} Release 中未找到符合要求、并带 GitHub SHA-256 digest 的 Windows CPU x64 ZIP{}",
+            "在官方 {} Release 中未找到符合当前平台要求、并带 GitHub SHA-256 digest 的 CPU x64 资产{}",
             kind.api_repo(),
             extra
         ))
@@ -415,7 +430,10 @@ where
 
 #[cfg(feature = "desktop")]
 pub fn desktop_install_supported() -> bool {
-    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+    cfg!(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))
 }
 
 #[cfg(feature = "desktop")]
@@ -500,7 +518,9 @@ fn release_to_info(kind: EngineKind, release: &GitHubRelease) -> AppResult<Optio
             asset.name, asset.size, asset.state
         )));
     }
-    if !safe_component(&asset.name) || !asset.name.ends_with(".zip") {
+    if !safe_component(&asset.name)
+        || !(asset.name.ends_with(".zip") || asset.name.ends_with(".tar.gz"))
+    {
         return Err(invalid("官方资产文件名不是安全的 ZIP 名称；拒绝继续"));
     }
     let sha256 = parse_sha256(asset.digest.as_deref())?;
@@ -582,7 +602,12 @@ where
             .as_nanos(),
         STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let archive_path = engine_root.join(format!(".download-{}-{run_id}.zip.part", release.tag));
+    let ext = if release.asset_name.ends_with(".tar.gz") {
+        "tar.gz"
+    } else {
+        "zip"
+    };
+    let archive_path = engine_root.join(format!(".download-{}-{run_id}.{ext}.part", release.tag));
     match fs::symlink_metadata(&archive_path) {
         Ok(_) => return Err(invalid("临时下载路径冲突；为避免覆盖已有文件，已停止")),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -638,7 +663,11 @@ where
     }
 
     let prepare_result: AppResult<()> = (|| {
-        extract_zip_safely(&archive_path, &stage, &mut progress)?;
+        if release.asset_name.ends_with(".tar.gz") {
+            extract_tar_gz_safely(&archive_path, &stage, &mut progress)?;
+        } else {
+            extract_zip_safely(&archive_path, &stage, &mut progress)?;
+        }
         let manifest = InstalledManifest {
             engine: release.engine.clone(),
             tag: release.tag.clone(),
@@ -831,6 +860,79 @@ fn sha256_file(path: &Path) -> AppResult<String> {
         hasher.update(&buffer[..count]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn extract_tar_gz_safely<F>(
+    archive_path: &Path,
+    destination: &Path,
+    progress: &mut F,
+) -> AppResult<()>
+where
+    F: FnMut(ProgressEvent),
+{
+    let root = destination.canonicalize()?;
+    let mut archive = Archive::new(GzDecoder::new(File::open(archive_path)?));
+    let mut total = 0u64;
+    let mut count = 0usize;
+    for item in archive.entries()? {
+        count += 1;
+        if count > MAX_ARCHIVE_ENTRIES {
+            return Err(invalid("tar.gz 文件条目过多；拒绝解包"));
+        }
+        let mut entry = item?;
+        let ty = entry.header().entry_type();
+        if !ty.is_file() && !ty.is_dir() {
+            return Err(invalid("tar.gz 包含链接或特殊文件；拒绝解包"));
+        }
+        let name = entry.path()?.into_owned();
+        if !name.is_relative()
+            || name.to_string_lossy().contains('\\')
+            || !name.components().all(|c| matches!(c, Component::Normal(_)))
+        {
+            return Err(invalid(format!("tar.gz 包含不安全路径：{name:?}")));
+        }
+        let out = root.join(&name);
+        let size = entry.size();
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| invalid("tar.gz 解压总大小溢出"))?;
+        if size > MAX_SINGLE_FILE_BYTES || total > MAX_UNPACKED_BYTES {
+            return Err(invalid("tar.gz 解压内容超过大小安全限制；拒绝解包"));
+        }
+        ensure_safe_extraction_path(&root, &out)?;
+        if ty.is_dir() {
+            fs::create_dir_all(&out)?;
+        } else {
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent)?;
+                ensure_safe_extraction_path(&root, parent)?;
+            }
+            let mut file = OpenOptions::new().write(true).create_new(true).open(&out)?;
+            let copied = io::copy(&mut entry.by_ref().take(size + 1), &mut file)?;
+            if copied != size {
+                return Err(invalid("tar.gz 文件解压大小不一致"));
+            }
+            file.flush()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if entry.header().mode()? & 0o111 != 0 {
+                    0o755
+                } else {
+                    0o644
+                };
+                fs::set_permissions(&out, fs::Permissions::from_mode(mode))?;
+            }
+            ensure_safe_extraction_path(&root, &out)?;
+        }
+        progress(ProgressEvent {
+            phase: "extract",
+            completed: count as u64,
+            total: 0,
+            attempt: DOWNLOAD_ATTEMPTS,
+        });
+    }
+    Ok(())
 }
 
 fn extract_zip_safely<F>(archive_path: &Path, destination: &Path, progress: &mut F) -> AppResult<()>
@@ -1109,6 +1211,12 @@ mod tests {
             EngineKind::Media => "master-1106-532d2c1",
         };
         let asset = match kind {
+            EngineKind::Chat if cfg!(all(target_os = "linux", target_arch = "x86_64")) => {
+                "llama-b12498-bin-ubuntu-x64.tar.gz"
+            }
+            EngineKind::Media if cfg!(all(target_os = "linux", target_arch = "x86_64")) => {
+                "sd-master-532d2c1-bin-Linux-Ubuntu-26.04-x86_64.zip"
+            }
             EngineKind::Chat => "llama-b12498-bin-win-cpu-x64.zip",
             EngineKind::Media => "sd-master-532d2c1-bin-win-cpu-x64.zip",
         };
@@ -1134,13 +1242,13 @@ mod tests {
         let info = release_to_info(EngineKind::Media, &release(EngineKind::Media))
             .unwrap()
             .unwrap();
-        assert_eq!(info.asset_name, "sd-master-532d2c1-bin-win-cpu-x64.zip");
+        assert_eq!(info.asset_name, release(EngineKind::Media).assets[0].name);
         assert_eq!(info.sha256, "a".repeat(64));
 
         let chat = release_to_info(EngineKind::Chat, &release(EngineKind::Chat))
             .unwrap()
             .unwrap();
-        assert_eq!(chat.asset_name, "llama-b12498-bin-win-cpu-x64.zip");
+        assert_eq!(chat.asset_name, release(EngineKind::Chat).assets[0].name);
 
         let mut invalid_release = release(EngineKind::Media);
         invalid_release.assets[0].browser_download_url = "https://example.com/evil.zip".into();
@@ -1274,6 +1382,63 @@ mod tests {
         fs::create_dir(&destination).unwrap();
         assert!(extract_zip_safely(&zip_path, &destination, &mut |_| {}).is_err());
         assert!(!destination.join("link.txt").exists());
+    }
+
+    #[test]
+    fn extracts_tar_gz_regular_file_and_restores_executable_mode() {
+        use flate2::{write::GzEncoder, Compression};
+        use tar::Builder;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("good.tar.gz");
+        let encoder = GzEncoder::new(File::create(&path).unwrap(), Compression::default());
+        let mut b = Builder::new(encoder);
+        let mut h = tar::Header::new_gnu();
+        h.set_path("bin/engine").unwrap();
+        h.set_mode(0o755);
+        h.set_size(4);
+        h.set_cksum();
+        b.append(&h, &b"test"[..]).unwrap();
+        b.finish().unwrap();
+        b.into_inner().unwrap().finish().unwrap();
+        let out = temp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        extract_tar_gz_safely(&path, &out, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(out.join("bin/engine")).unwrap(), b"test");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(out.join("bin/engine"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_tar_gz_traversal_and_symlink() {
+        use flate2::{write::GzEncoder, Compression};
+        use tar::Builder;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bad.tar.gz");
+        let encoder = GzEncoder::new(File::create(&path).unwrap(), Compression::default());
+        let mut b = Builder::new(encoder);
+        let mut h = tar::Header::new_gnu();
+        h.set_path("link").unwrap();
+        h.set_entry_type(tar::EntryType::Symlink);
+        h.set_link_name("../outside").unwrap();
+        h.set_size(0);
+        h.set_cksum();
+        b.append(&h, &b""[..]).unwrap();
+        b.finish().unwrap();
+        b.into_inner().unwrap().finish().unwrap();
+        let out = temp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        assert!(extract_tar_gz_safely(&path, &out, &mut |_| {}).is_err());
+        assert!(!out.join("link").exists());
     }
 
     #[test]

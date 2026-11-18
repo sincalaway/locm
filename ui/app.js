@@ -14,6 +14,7 @@
     hardware: null,
     storage: null,
     engines: new Map(),
+    enginesLoaded: false,
     mediaInstallSupported: false,
     mediaInstallBusy: false,
     models: [],
@@ -35,6 +36,8 @@
     runCapabilitiesLoading: null,
     runPreferences: loadRunPreferences(),
     samples: [],
+    modelProcesses: [],
+    scheduledTasks: [],
     sessions: loadSessions(),
     currentSessionId: loadCurrentSessionId(),
     busyChat: false,
@@ -87,7 +90,8 @@
       refreshMediaModels();
     }
     if (safePage === "chat") { renderChat(); refreshRuntime(); }
-    if (safePage === "monitor") { drawChart(); refreshSystem(); }
+    if (safePage === "monitor") { drawChart(); refreshSystem(); refreshRuntime(); }
+    if (safePage === "schedule") loadScheduledTasks();
     if (safePage === "settings") loadSettings();
   }
 
@@ -377,6 +381,7 @@
     updateRunEstimates();
     renderOverviewRecommendation();
     renderRecommendedModels();
+    updateQuickstart();
   }
 
   function renderModelStorage() {
@@ -415,6 +420,25 @@
       : "未检测到可用内存信息，暂不能给出本机适配判断。可浏览模型，但请先核对文件大小和运行需求。";
   }
 
+  function updateQuickstart() {
+    const hardwareStep = $('[data-quick-step="hardware"]');
+    if (!hardwareStep) return;
+    const hardwareReady = Boolean(state.hardware);
+    const chatEngine = state.engines.get("llama.cpp");
+    const engineReady = Boolean(chatEngine?.installedVersions?.length);
+    const modelCount = state.models.length;
+    const updateStep = (name, complete, message) => {
+      const step = $(`[data-quick-step="${name}"]`);
+      if (!step) return;
+      step.classList.toggle("complete", complete);
+      const number = step.querySelector(".quick-step-number");
+      number.textContent = complete ? "✓" : String(name === "hardware" ? 1 : name === "engine" ? 2 : 3);
+      step.querySelector("small").textContent = message;
+    };
+    updateStep("hardware", hardwareReady, hardwareReady ? "本机硬件信息已读取" : "硬件信息尚未读取");
+    updateStep("engine", engineReady, engineReady ? "llama.cpp 已安装" : state.enginesLoaded ? "需要安装 llama.cpp 推理引擎" : "正在读取引擎安装状态…");
+    updateStep("models", modelCount > 0, modelCount ? `已找到 ${modelCount} 个本地 GGUF 模型` : "导入 GGUF 或从模型库下载");
+  }
   async function loadHardware() {
     const refreshButton = $("#refresh-hardware");
     if (refreshButton) { refreshButton.disabled = true; refreshButton.textContent = "正在检测…"; }
@@ -454,6 +478,7 @@
     try {
       const statuses = await invoke("engine_statuses");
       state.engines = new Map(statuses.map((status) => [status.engine, status]));
+      state.enginesLoaded = true;
       state.mediaInstallSupported = await invoke("engine_install_supported");
       const supported = state.mediaInstallSupported;
       const engines = statuses.map((status) => ({ engine: status.engine }));
@@ -466,15 +491,18 @@
         $$(".engine-card").forEach((card) => {
           const button = $("[data-engine-action=install]", card);
           button.disabled = true;
-          button.textContent = "仅支持 Windows x64 安装";
+          button.textContent = "此平台暂不支持安装";
         });
       }
       renderMediaEngineBanners();
       renderMediaLibraryEngine();
+      updateQuickstart();
     } catch (error) {
+      state.enginesLoaded = true;
       [$("#engine-cards"), $("#overview-engines")].forEach((box) => { box.innerHTML = `<div class="error-box">无法读取引擎状态：${escapeText(error)}</div>`; });
       renderMediaEngineBanners(String(error));
       renderMediaLibraryEngine(String(error));
+      updateQuickstart();
     }
   }
 
@@ -501,11 +529,11 @@
       } else {
         status.className = "status-pill empty";
         status.textContent = known ? "尚未安装" : "状态未知";
-        description.textContent = "画图和视频共用 stable-diffusion.cpp CPU x64 引擎；安装不会下载模型权重。GPU 版本未接入此安装器。";
+        description.textContent = "画图和视频共用 stable-diffusion.cpp 官方 CPU x64 引擎；安装不会下载模型权重。GPU 版本未接入此安装器。";
         install.hidden = false;
         manage.hidden = true;
         install.disabled = !known || !state.mediaInstallSupported || state.mediaInstallBusy;
-        install.textContent = !known ? "无法读取引擎状态" : (!state.mediaInstallSupported ? "仅支持 Windows x64 安装" : (state.mediaInstallBusy ? "正在安装…" : "一键安装"));
+        install.textContent = !known ? "无法读取引擎状态" : (!state.mediaInstallSupported ? "此平台暂不支持安装" : (state.mediaInstallBusy ? "正在安装…" : "一键安装"));
       }
     });
   }
@@ -696,7 +724,7 @@
 
   async function installMediaEngine() {
     if (state.mediaInstallBusy) return;
-    if (!state.mediaInstallSupported) { showToast("创作引擎安装器仅支持 Windows x64", "error"); return; }
+    if (!state.mediaInstallSupported) { showToast("此平台暂不支持自动安装引擎", "error"); return; }
     state.mediaInstallBusy = true;
     let failure = "";
     ["image", "video"].forEach((page) => {
@@ -819,7 +847,8 @@
         });
       }
       refreshModelSelect();
-    } catch (error) { $("#models-installed").innerHTML = `<div class="error-box">无法读取模型列表：${escapeText(error)}</div>`; }
+      updateQuickstart();
+    } catch (error) { $("#models-installed").innerHTML = `<div class="error-box">无法读取模型列表：${escapeText(error)}</div>`; updateQuickstart(); }
   }
   function refreshModelSelect() {
     const select = $("#run-model-select");
@@ -1284,6 +1313,144 @@
     }
   }
 
+  function formatLocalDateTime(value) {
+    if (!Number.isFinite(Number(value)) || Number(value) <= 0) return "时间未知";
+    return new Date(Number(value)).toLocaleString();
+  }
+  function recurrenceLabel(value) {
+    return value === "hourly" ? "每小时" : (value === "daily" ? "每 24 小时" : "仅一次");
+  }
+  function defaultScheduleInputTime() {
+    const date = new Date(Date.now() + 5 * 60_000);
+    date.setSeconds(0, 0);
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  }
+  function renderScheduledTasks() {
+    const box = $("#schedule-list");
+    if (!box) return;
+    box.replaceChildren();
+    const tasks = state.scheduledTasks || [];
+    $("#schedule-task-count").textContent = `${tasks.length} 项`;
+    if (!tasks.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-state";
+      empty.textContent = "还没有定时任务。创建后，应用会在打开期间检查到期时间。";
+      box.append(empty);
+      return;
+    }
+    tasks.slice().sort((a, b) => Number(a.nextRunAtMs || a.scheduledAtMs) - Number(b.nextRunAtMs || b.scheduledAtMs)).forEach((task) => {
+      const card = document.createElement("article"); card.className = "schedule-task";
+      const heading = document.createElement("div"); heading.className = "schedule-task-heading";
+      const title = document.createElement("strong"); title.textContent = task.title;
+      const finishedOnce = task.recurrence === "once" && task.lastRunAtMs != null;
+      const status = document.createElement("span"); status.className = `schedule-status ${task.enabled ? "enabled" : "paused"}`;
+      status.textContent = finishedOnce ? "已结束" : (task.enabled ? "已启用" : "已暂停");
+      heading.append(title, status);
+      const timing = document.createElement("p"); timing.className = "schedule-task-timing muted tiny";
+      timing.textContent = `${recurrenceLabel(task.recurrence)} · ${task.nextRunAtMs ? `下次 ${formatLocalDateTime(task.nextRunAtMs)}` : "无待执行时间"}`;
+      const prompt = document.createElement("p"); prompt.className = "schedule-task-prompt";
+      prompt.textContent = task.prompt;
+      card.append(heading, timing, prompt);
+      if (task.lastStatus) {
+        const statusLabel = task.lastStatus === "success" ? "成功" : (task.lastStatus === "skipped" ? "已跳过" : "失败");
+        const last = document.createElement("div"); last.className = `schedule-last-result ${task.lastStatus === "success" ? "success" : (task.lastStatus === "skipped" ? "skipped" : "failed")}`;
+        const lastTime = document.createElement("strong"); lastTime.textContent = `最近状态：${statusLabel} · ${formatLocalDateTime(task.lastRunAtMs)}`;
+        const summary = document.createElement("p"); summary.textContent = task.lastSummary || "没有返回摘要";
+        last.append(lastTime, summary); card.append(last);
+      }
+      if (Array.isArray(task.history) && task.history.length > 1) {
+        const details = document.createElement("details"); details.className = "schedule-history";
+        const summary = document.createElement("summary"); summary.textContent = `执行记录（${task.history.length}）`;
+        const list = document.createElement("ul");
+        task.history.slice().reverse().slice(0, 5).forEach((run) => {
+          const item = document.createElement("li");
+          const runStatus = run.status === "success" ? "成功" : (run.status === "skipped" ? "已跳过" : "失败");
+          item.textContent = `${formatLocalDateTime(run.runAtMs)} · ${runStatus} · ${run.summary || "无摘要"}`;
+          list.append(item);
+        });
+        details.append(summary, list); card.append(details);
+      }
+      const actions = document.createElement("div"); actions.className = "schedule-task-actions";
+      const toggle = document.createElement("button"); toggle.className = "button secondary"; toggle.type = "button";
+      toggle.textContent = finishedOnce ? "已结束" : (task.enabled ? "暂停" : "启用");
+      toggle.disabled = finishedOnce;
+      toggle.addEventListener("click", async () => {
+        if (finishedOnce) return;
+        toggle.disabled = true;
+        try { await invoke("set_scheduled_task_enabled", { id: task.id, enabled: !task.enabled }); await loadScheduledTasks(); }
+        catch (error) { showToast(`更新任务失败：${error}`, "error"); toggle.disabled = false; }
+      });
+      const remove = document.createElement("button"); remove.className = "button danger"; remove.type = "button"; remove.textContent = "删除";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(`删除定时任务“${task.title}”及其本机执行记录？`)) return;
+        remove.disabled = true;
+        try { await invoke("delete_scheduled_task", { id: task.id }); await loadScheduledTasks(); }
+        catch (error) { showToast(`删除任务失败：${error}`, "error"); remove.disabled = false; }
+      });
+      actions.append(toggle, remove); card.append(actions); box.append(card);
+    });
+  }
+  async function loadScheduledTasks() {
+    const box = $("#schedule-list");
+    if (!box) return;
+    try {
+      state.scheduledTasks = await invoke("list_scheduled_tasks");
+      renderScheduledTasks();
+    } catch (error) {
+      box.replaceChildren();
+      const failure = document.createElement("p"); failure.className = "error-box";
+      failure.textContent = `读取定时任务失败：${error}`;
+      const retry = document.createElement("button"); retry.className = "button secondary"; retry.type = "button"; retry.textContent = "重试";
+      retry.addEventListener("click", loadScheduledTasks); box.append(failure, retry);
+    }
+  }
+  async function createScheduledTask(event) {
+    event.preventDefault();
+    const button = $("#schedule-create");
+    const scheduledAtMs = new Date($("#schedule-at").value).getTime();
+    if (!Number.isFinite(scheduledAtMs)) { showToast("请选择有效的首次执行时间", "error"); return; }
+    button.disabled = true; button.textContent = "正在保存…";
+    try {
+      await invoke("create_scheduled_task", {
+        title: $("#schedule-title").value.trim(),
+        prompt: $("#schedule-prompt").value.trim(),
+        scheduledAtMs,
+        recurrence: $("#schedule-recurrence").value,
+      });
+      $("#schedule-title").value = ""; $("#schedule-prompt").value = "";
+      $("#schedule-recurrence").value = "once"; $("#schedule-at").value = defaultScheduleInputTime();
+      await loadScheduledTasks(); showToast("定时任务已保存到本机");
+    } catch (error) { showToast(`创建定时任务失败：${error}`, "error"); }
+    finally { button.disabled = false; button.textContent = "创建定时任务"; }
+  }
+
+  function renderMonitorProcesses() {
+    const box = $("#monitor-processes");
+    if (!box) return;
+    box.replaceChildren();
+    const grouped = new Map();
+    (state.modelProcesses || []).forEach((process) => {
+      const current = grouped.get(process.name) || { name: process.name, count: 0, pids: [], cpu: 0, memory: 0 };
+      current.count += 1; current.pids.push(process.pid);
+      current.cpu += Number(process.cpuUsagePercent) || 0;
+      current.memory += Number(process.memoryBytes) || 0;
+      grouped.set(process.name, current);
+    });
+    if (!grouped.size) {
+      const empty = document.createElement("p");
+      empty.className = "muted tiny";
+      empty.textContent = "当前未检测到名称匹配的 llama-server 或 stable-diffusion.cpp 进程。启动任务后采样可能需要数秒。";
+      box.append(empty);
+      return;
+    }
+    [...grouped.values()].forEach((process) => {
+      const row = document.createElement("div"); row.className = "monitor-process-row";
+      const name = document.createElement("strong"); name.textContent = `${process.name} · ${process.count} 个进程`;
+      const detail = document.createElement("small");
+      detail.textContent = `PID ${process.pids.join(", ")} · CPU 合计 ${process.cpu.toFixed(1)}% · 内存 ${fmtBytes(process.memory)}`;
+      row.append(name, detail); box.append(row);
+    });
+  }
   async function refreshRuntime() {
     try {
       state.runtime = await invoke("runtime_status");
@@ -1315,6 +1482,7 @@
         ? "发送到本机 llama-server；回复为非流式"
         : (state.models.length ? "选择模型将启动本机推理服务" : "先导入一个 GGUF 模型");
       $("#monitor-api").textContent = `${host}:${state.runtime.port}`;
+      renderMonitorProcesses();
     } catch (error) {
       state.runtime = { ...state.runtime, running: false, lastError: `运行状态暂时无法读取：${error}` };
       $("#runtime-chip").textContent = "状态未知 · 无法确认本机服务";
@@ -1330,6 +1498,7 @@
       $("#chat-local-port").textContent = "本地服务状态未知";
       $("#chat-local-port").dataset.lan = "false";
       $("#chat-local-port").title = "暂时无法读取本机服务状态；聊天已禁用以避免使用过期状态";
+      renderMonitorProcesses();
       $("#chat-hint").textContent = "暂时无法读取本机服务状态，请先重试运行页";
       $("#monitor-api").textContent = "服务状态未知";
       updateChatSendState();
@@ -1615,6 +1784,7 @@
     try {
       state.settings = await invoke("app_settings");
       $("#settings-model-dir").value = state.settings.modelDirectory;
+      $("#settings-creations-dir").value = state.settings.creationsDirectory || "";
       $("#settings-appearance").value = state.settings.appearance || "system";
       $("#settings-port").value = state.settings.apiPort || 8686;
       applyAppearance(state.settings.appearance);
@@ -1630,6 +1800,7 @@
     const settings = {
       ...(state.settings || {}),
       modelDirectory: $("#settings-model-dir").value.trim(),
+      creationsDirectory: $("#settings-creations-dir").value.trim() || null,
       appearance: $("#settings-appearance").value,
       apiPort: Number($("#settings-port").value),
     };
@@ -1647,6 +1818,12 @@
       const path = await invoke("choose_directory");
       if (path) $("#settings-model-dir").value = path;
     } catch (error) { showToast(`选择目录失败：${error}`, "error"); }
+  }
+  async function chooseCreationsDirectory() {
+    try {
+      const path = await invoke("choose_directory");
+      if (path) $("#settings-creations-dir").value = path;
+    } catch (error) { showToast(`选择作品目录失败：${error}`, "error"); }
   }
 
   async function chooseOverviewModelDirectory() {
@@ -1672,6 +1849,8 @@
   async function refreshSystem() {
     try {
       const sample = await invoke("system_snapshot");
+      state.modelProcesses = Array.isArray(sample.modelProcesses) ? sample.modelProcesses : [];
+      renderMonitorProcesses();
       const cpu = Math.max(0, Math.min(100, sample.cpuUsagePercent || 0));
       const ram = sample.totalMemoryBytes ? sample.usedMemoryBytes / sample.totalMemoryBytes * 100 : 0;
       const item = { at: Date.now(), cpu, ram: Math.max(0, Math.min(100, ram)) };
@@ -1687,7 +1866,10 @@
       $("#overview-ram").textContent = `${fmtBytes(sample.usedMemoryBytes)} / ${fmtBytes(sample.totalMemoryBytes)}`;
       $("#overview-ram-bar").style.width = `${ram}%`;
       if ($("#page-monitor").classList.contains("active")) drawChart();
-    } catch { /* The app can still render when Tauri APIs are unavailable. */ }
+    } catch {
+      state.modelProcesses = [];
+      renderMonitorProcesses();
+    }
   }
   function drawChart() {
     const canvas = $("#system-chart");
@@ -1783,6 +1965,7 @@
     const status = $(`#${kind}-generation-status`);
     const result = $(`#${kind}-result-path`);
     state.mediaGenerationJobId = jobId; state.mediaGenerationKind = kind;
+    renderMonitorProcesses();
     generate.disabled = true; generate.textContent = "生成中…"; cancel.hidden = false; cancel.disabled = false;
     result.textContent = "";
     status.textContent = "正在启动 stable-diffusion.cpp 官方 sd-cli；本机为 CPU-only 构建，生成时间取决于模型和硬件。可随时取消。";
@@ -1813,6 +1996,7 @@
       if (state.mediaGenerationJobId === jobId) {
         state.mediaGenerationJobId = null; state.mediaGenerationKind = null;
       }
+      renderMonitorProcesses();
       generate.disabled = false; generate.textContent = video ? "生成视频" : "生成图片"; cancel.hidden = true;
     }
   }
@@ -1856,12 +2040,14 @@
         }
       });
       renderRunPreferences();
+      $("#schedule-at").value = defaultScheduleInputTime();
       $("#chat-temperature").value = String(state.chatPreferences.temperature);
       $("#chat-temperature-value").textContent = state.chatPreferences.temperature.toFixed(1);
       $("#chat-include-history").checked = state.chatPreferences.includeHistory;
       await Promise.all([loadChatHistory(), loadHardware(), refreshModelStorage(), loadEngines(), loadModels(), loadSettings(), refreshRuntime(), refreshSystem()]);
       setInterval(refreshSystem, 2000);
       setInterval(refreshRuntime, 3000);
+      setInterval(() => { if ($("#page-schedule").classList.contains("active")) loadScheduledTasks(); }, 5000);
       setPage(location.hash.slice(1) || "overview");
     } catch (error) { showToast(`桌面服务初始化失败：${error}`, "error"); }
   }
@@ -1869,6 +2055,7 @@
   window.addEventListener("hashchange", () => setPage(location.hash.slice(1)));
   window.addEventListener("resize", () => { if ($("#page-monitor").classList.contains("active")) drawChart(); });
   $("#refresh-hardware").addEventListener("click", loadHardware);
+  $("#quickstep-refresh-hardware").addEventListener("click", loadHardware);
   $("#refresh-model-storage").addEventListener("click", refreshModelStorage);
   $("#overview-choose-model-dir").addEventListener("click", chooseOverviewModelDirectory);
   $("#overview-recommended-models").addEventListener("click", () => switchModelTab("recommended"));
@@ -1974,8 +2161,11 @@
   });
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#choose-model-dir").addEventListener("click", chooseModelDirectory);
+  $("#choose-creations-dir").addEventListener("click", chooseCreationsDirectory);
   $("#settings-appearance").addEventListener("change", (event) => applyAppearance(event.target.value));
   $("#monitor-refresh").addEventListener("click", refreshSystem);
+  $("#schedule-refresh").addEventListener("click", loadScheduledTasks);
+  $("#schedule-form").addEventListener("submit", createScheduledTask);
   $$("[data-jump]").forEach((button) => button.addEventListener("click", () => { location.hash = `#${button.dataset.jump}`; }));
   start();
 })();

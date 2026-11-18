@@ -36,6 +36,11 @@
 
       <section class="page active" id="page-overview" data-title="概览">
         <div class="page-intro overview-intro"><div><div class="eyebrow">DEVICE OVERVIEW</div><h1>本机概览</h1><p class="intro-copy">硬件与模型磁盘空间来自本机检测；未取得的数据会显示为未知。</p></div><button class="button secondary" id="refresh-hardware" type="button">重新检测硬件</button></div>
+        <section class="quick-start-steps" aria-label="本地模型快速开始">
+          <article class="quick-start-step" data-quick-step="hardware"><span class="quick-step-number">1</span><div><strong>检测硬件</strong><small id="quickstep-hardware-status">正在读取本机信息…</small></div><button class="text-button" id="quickstep-refresh-hardware" type="button">重新检测</button></article>
+          <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>安装推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><a class="text-button" href="#run">管理引擎</a></article>
+          <article class="quick-start-step" data-quick-step="models"><span class="quick-step-number">3</span><div><strong>准备模型</strong><small id="quickstep-model-status">正在读取本地模型…</small></div><a class="text-button" href="#models">打开模型库</a></article>
+        </section>
         <section class="overview-device-card card" aria-labelledby="overview-headline">
           <div class="overview-device-layout">
             <div class="overview-device-main">
@@ -111,7 +116,7 @@
           <section class="card run-resource-card">
             <div><div class="eyebrow">LOCAL RESOURCE PLAN</div><h2>自动分层规划</h2><p id="run-plan-summary" class="muted">选择一个已安装模型后查看本机资源估算。</p></div>
             <div class="resource-plan">
-              <article class="resource-tile gpu-plan"><div><strong>显卡 · 本地推理路径</strong><span id="run-gpu-value">—</span></div><div class="meter"><i id="run-gpu-bar"></i></div><small id="run-gpu-note">当前 Windows x64 安装路径为 CPU 版本；不向 GPU 传层数。</small></article>
+              <article class="resource-tile gpu-plan"><div><strong>显卡 · 本地推理路径</strong><span id="run-gpu-value">—</span></div><div class="meter"><i id="run-gpu-bar"></i></div><small id="run-gpu-note">当前安装的官方 CPU 版本不向 GPU 传层数。</small></article>
               <article class="resource-tile ram-plan"><div><strong>内存 · 模型映射</strong><span id="run-ram-value">—</span></div><div class="meter blue-meter"><i id="run-ram-bar"></i></div><small id="run-ram-note">读取模型大小与系统可用内存后估算；实际使用量会随上下文变化。</small></article>
               <article class="resource-tile disk-plan"><div><strong>硬盘 · 按需读取</strong><span id="run-disk-value">—</span></div><div class="meter"><i id="run-disk-bar"></i></div><small id="run-disk-note">模型文件保留在本机；内存不足时映射读取可能变慢。</small></article>
             </div>
@@ -221,7 +226,25 @@
         </div>
       </section>
 
-      <section class="page" id="page-schedule" data-title="定时"><div class="page-intro"><div><div class="eyebrow">SCHEDULED TASKS</div><h1>定时任务</h1><p class="intro-copy">计划任务和推送依赖桌面进程持续运行；当前版本没有后台调度器。</p></div></div><div class="card feature-locked"><div class="feature-symbol">◷</div><h2>定时执行尚未接入</h2><p>可见的任务列表、时间计划、错过任务补跑和 Telegram/微信等推送通道都尚未实现。应用关闭时不会在后台执行任务。</p></div></section>
+      <section class="page" id="page-schedule" data-title="定时">
+        <div class="page-intro"><div><div class="eyebrow">SCHEDULED TASKS</div><h1>定时任务</h1><p class="intro-copy">安排提示词在本地运行中的模型上执行；任务列表与执行摘要保存在此设备。</p></div><button class="button secondary" id="schedule-refresh" type="button">刷新任务</button></div>
+        <div class="notice"><strong>运行边界</strong><span>任务只在应用保持打开时检查；到期时须有本地 llama-server 正在运行，否则会记录失败。不会自动启动或切换模型，也不提供应用关闭后的后台执行或推送。</span></div>
+        <div class="schedule-layout">
+          <form id="schedule-form" class="card schedule-form">
+            <h2>安排新任务</h2>
+            <label for="schedule-title">任务名称</label><input id="schedule-title" maxlength="200" required placeholder="例如：整理今天的笔记" />
+            <label for="schedule-at">首次执行时间（本地时间）</label><input id="schedule-at" type="datetime-local" required />
+            <label for="schedule-recurrence">重复</label><select id="schedule-recurrence"><option value="once">仅一次</option><option value="hourly">每小时</option><option value="daily">每 24 小时</option></select>
+            <label for="schedule-prompt">发送给当前运行模型的提示词</label><textarea id="schedule-prompt" rows="6" maxlength="32000" required placeholder="写下到时间后要交给本地模型的任务…"></textarea>
+            <button class="button primary" id="schedule-create" type="submit">创建定时任务</button>
+            <p class="muted tiny">重复按固定时间间隔计算，不因时区夏令时调整；应用关闭期间错过的周期会跳过，不会补跑。</p>
+          </form>
+          <section class="card schedule-list-card" aria-labelledby="schedule-list-heading">
+            <div class="schedule-list-heading"><div><h2 id="schedule-list-heading">已安排的任务</h2><p class="muted tiny">启用、暂停或删除任务；最近执行结果会显示在任务卡片中。</p></div><span id="schedule-task-count" class="muted tiny">0 项</span></div>
+            <div id="schedule-list" class="schedule-list" aria-live="polite"><p class="muted tiny">正在读取本机任务…</p></div>
+          </section>
+        </div>
+      </section>
 
       <section class="page image-page" id="page-image" data-title="画图">
         <header class="image-page-toolbar">
@@ -253,9 +276,24 @@
         <section class="card image-generation-form video-generation-form" aria-labelledby="video-model-empty-title"><div class="image-section-heading"><div><h2 id="video-model-empty-title">Wan 文字生成视频</h2><p>当前只开放 33 帧单段任务；请使用 Wan T2V 模型。</p></div><span class="status-pill empty">33 帧</span></div><label for="video-model-select">Wan 主模型 / 低噪声模型</label><select id="video-model-select"><option value="">先下载或扫描模型组件…</option></select><label for="video-high-noise-select">高噪声专家（Wan2.2 双专家可选）</label><select id="video-high-noise-select"><option value="">无 / Wan2.1 或 Wan2.2 单专家模型</option></select><label for="video-vae-select">Wan VAE（必需）</label><select id="video-vae-select"><option value="">选择 VAE…</option></select><label for="video-text-select">T5-XXL 文本编码器（必需）</label><select id="video-text-select"><option value="">选择 T5-XXL…</option></select><label for="video-prompt">提示词</label><textarea id="video-prompt" rows="4" maxlength="8192" placeholder="描述 33 帧短片内容"></textarea><label for="video-negative-prompt">反向提示词（可选）</label><textarea id="video-negative-prompt" rows="2" maxlength="8192"></textarea><div class="image-generation-options"><label for="video-size">尺寸<select id="video-size"><option value="832x480">832 × 480</option><option value="480x832">480 × 832</option><option value="640x368">640 × 368</option></select></label><label for="video-steps">步数<input id="video-steps" type="number" min="1" max="100" value="20" /></label></div><div class="media-generation-actions"><button class="button primary" id="generate-video" type="button">生成视频</button><button class="button danger" id="cancel-video-generation" type="button" hidden>取消生成</button></div><p id="video-generation-status" class="muted tiny" aria-live="polite">所选权重文件总大小不等于运行内存；CPU 视频生成不适用于所有电脑，遇到内存不足可取消。</p><p id="video-result-path" class="muted tiny"></p><div class="notice"><strong>运行限制</strong><span>本地安装的是 stable-diffusion.cpp CPU 版本；即使检测到独显，本版本也不会使用 GPU。Wan 的显存/内存需求随模型、分辨率和实现变化，页面不显示猜测数值。</span></div></section>
       </section>
 
-      <section class="page" id="page-monitor" data-title="监测"><div class="page-intro"><div><div class="eyebrow">SYSTEM MONITOR</div><h1>系统监测</h1><p class="intro-copy">约每 2 秒刷新；显示最近 2 分钟的 CPU 与内存使用率，只读取系统信息。</p></div><button class="button secondary" id="monitor-refresh">立即刷新</button></div><div class="summary-grid two-metrics"><article class="summary-card"><div class="summary-head"><span>CPU</span><strong id="monitor-cpu-value">—</strong></div><div class="meter"><i id="monitor-cpu-bar"></i></div><small id="monitor-cpu-name">—</small></article><article class="summary-card"><div class="summary-head"><span>内存</span><strong id="monitor-ram-value">—</strong></div><div class="meter blue-meter"><i id="monitor-ram-bar"></i></div><small id="monitor-ram-text">—</small></article></div><div class="card chart-card"><h2>最近 2 分钟</h2><canvas id="system-chart" width="1200" height="300" aria-label="CPU 和内存使用曲线"></canvas><div class="legend"><span><i class="legend-cpu"></i>CPU</span><span><i class="legend-ram"></i>内存</span></div></div><div class="card"><h2>本地推理服务</h2><div class="metadata-row"><span>监听地址</span><strong id="monitor-api">127.0.0.1:8686</strong></div><p class="muted tiny">默认仅绑定 127.0.0.1；只有开启运行页的局域网访问后，才绑定一个私有 IPv4 地址。</p></div></section>
+      <section class="page" id="page-monitor" data-title="监测">
+        <div class="page-intro"><div><div class="eyebrow">SYSTEM MONITOR</div><h1>系统监测</h1><p class="intro-copy">约每 2 秒刷新；显示最近 2 分钟的 CPU 与内存使用率，只读取系统信息。</p></div><button class="button secondary" id="monitor-refresh">立即刷新</button></div>
+        <div class="summary-grid two-metrics"><article class="summary-card"><div class="summary-head"><span>CPU</span><strong id="monitor-cpu-value">—</strong></div><div class="meter"><i id="monitor-cpu-bar"></i></div><small id="monitor-cpu-name">—</small></article><article class="summary-card"><div class="summary-head"><span>内存</span><strong id="monitor-ram-value">—</strong></div><div class="meter blue-meter"><i id="monitor-ram-bar"></i></div><small id="monitor-ram-text">—</small></article></div>
+        <div class="card chart-card"><h2>最近 2 分钟</h2><canvas id="system-chart" width="1200" height="300" aria-label="CPU 和内存使用曲线"></canvas><div class="legend"><span><i class="legend-cpu"></i>CPU</span><span><i class="legend-ram"></i>内存</span></div></div>
+        <section class="card monitor-process-card"><h2>模型进程</h2><div id="monitor-processes" class="monitor-process-list" aria-live="polite"><p class="muted tiny">正在读取本机模型进程…</p></div><p class="muted tiny">每约 2 秒读取系统进程表并按 llama-server / stable-diffusion.cpp 名称汇总 PID、CPU 与内存；CPU 总和可能超过 100%。无法匹配名称的辅助进程不计入。</p></section>
+        <div class="card"><h2>本地推理服务</h2><div class="metadata-row"><span>监听地址</span><strong id="monitor-api">127.0.0.1:8686</strong></div><p class="muted tiny">默认仅绑定 127.0.0.1；只有开启运行页的局域网访问后，才绑定一个私有 IPv4 地址。</p></div>
+      </section>
 
-      <section class="page" id="page-settings" data-title="设置"><div class="page-intro"><div><div class="eyebrow">PREFERENCES</div><h1>设置</h1><p class="intro-copy">配置模型和作品目录、界面外观与本地 API 端口。</p></div></div><form id="settings-form" class="settings-stack"><article class="card"><h2>模型存放</h2><label for="settings-model-dir">模型目录</label><div class="input-with-button"><input id="settings-model-dir" autocomplete="off" /><button class="button secondary" type="button" id="choose-model-dir">选择目录</button></div><p class="muted tiny">新导入或下载的 GGUF 文件存放在这里；更改目录不会搬移已有模型。</p></article><article class="card"><h2>界面与服务</h2><label for="settings-appearance">外观</label><select id="settings-appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><label for="settings-port">本地 API 端口</label><input id="settings-port" type="number" min="1024" max="65535" /><p class="muted tiny">默认 8686；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。</p></article><div class="settings-actions"><button class="button primary" type="submit">保存设置</button><span class="muted tiny" id="settings-status"></span></div></form><div class="notice"><strong>本地数据</strong><span>对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。</span></div></section>
+      <section class="page" id="page-settings" data-title="设置">
+        <div class="page-intro"><div><div class="eyebrow">PREFERENCES</div><h1>设置</h1><p class="intro-copy">配置模型和作品目录、界面外观与本地 API 端口。</p></div></div>
+        <form id="settings-form" class="settings-stack">
+          <article class="card"><h2>模型存放</h2><label for="settings-model-dir">模型目录</label><div class="input-with-button"><input id="settings-model-dir" autocomplete="off" /><button class="button secondary" type="button" id="choose-model-dir">选择目录</button></div><p class="muted tiny">新导入或下载的 GGUF 文件存放在这里；更改目录不会搬移已有模型。</p></article>
+          <article class="card"><h2>作品保存位置</h2><label for="settings-creations-dir">图片 / 视频作品目录</label><div class="input-with-button"><input id="settings-creations-dir" autocomplete="off" placeholder="留空使用应用默认目录" /><button class="button secondary" type="button" id="choose-creations-dir">选择目录</button></div><p class="muted tiny">留空时使用应用默认作品目录；选择位置后，图片与视频分别保存在 images 和 videos 子目录。更改位置不会移动已有作品。</p></article>
+          <article class="card"><h2>界面与服务</h2><label for="settings-appearance">外观</label><select id="settings-appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><label for="settings-port">本地 API 端口</label><input id="settings-port" type="number" min="1024" max="65535" /><p class="muted tiny">默认 8686；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。</p></article>
+          <div class="settings-actions"><button class="button primary" type="submit">保存设置</button><span class="muted tiny" id="settings-status"></span></div>
+        </form>
+        <div class="notice"><strong>本地数据</strong><span>对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。</span></div>
+      </section>
     </main>
   </div>
 </body>

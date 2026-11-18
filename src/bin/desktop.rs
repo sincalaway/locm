@@ -2,12 +2,14 @@
 #[path = "../agent_workspace.rs"]
 mod agent_workspace;
 #[path = "../desktop_backend.rs"]
-mod desktop_backend;
+pub mod desktop_backend;
 #[path = "../engine_manager.rs"]
 mod engine_manager;
 
 #[path = "../media_backend.rs"]
 mod media_backend;
+#[path = "../schedule_backend.rs"]
+mod schedule_backend;
 
 use llama_server_launcher_rs::run_config::{
     build_server_args, lan_bind_host, probe_capabilities, RunPreferences, ServerCapabilities,
@@ -26,7 +28,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -886,9 +888,70 @@ fn save_chat_sessions(app: AppHandle, sessions: Vec<serde_json::Value>) -> Resul
     desktop_backend::save_chat_sessions(&app, sessions)
 }
 
+#[tauri::command]
+fn list_scheduled_tasks(app: AppHandle) -> Result<Vec<schedule_backend::ScheduledTask>, String> {
+    schedule_backend::list(&app)
+}
+
+#[tauri::command]
+fn create_scheduled_task(
+    app: AppHandle,
+    title: String,
+    prompt: String,
+    scheduled_at_ms: i64,
+    recurrence: schedule_backend::Recurrence,
+) -> Result<schedule_backend::ScheduledTask, String> {
+    schedule_backend::create(&app, title, prompt, scheduled_at_ms, recurrence)
+}
+
+#[tauri::command]
+fn set_scheduled_task_enabled(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+) -> Result<schedule_backend::ScheduledTask, String> {
+    schedule_backend::set_enabled(&app, &id, enabled)
+}
+
+#[tauri::command]
+fn delete_scheduled_task(app: AppHandle, id: String) -> Result<(), String> {
+    schedule_backend::delete(&app, &id)
+}
+
 fn runtime_status_sync(app: &AppHandle, port: u16) -> Result<RuntimeInfo, String> {
     let state = app.state::<RuntimeState>();
     runtime_status_for(&state, port)
+}
+
+fn execute_scheduled_prompt(app: &AppHandle, prompt: &str) -> Result<String, String> {
+    let settings = desktop_backend::load_settings(app)?;
+    let status = runtime_status_sync(app, settings.api_port)?;
+    if !status.running {
+        return Err("当前没有运行中的本地模型".to_string());
+    }
+    let response = reqwest::blocking::Client::new()
+        .post(format!(
+            "http://{}:{}/v1/chat/completions",
+            status.bind_host, settings.api_port
+        ))
+        .json(&serde_json::json!({
+            "model": "local-model",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "stream": false
+        }))
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| format!("本地推理请求失败：{error}"))?;
+    let result: ChatResponse = response
+        .json()
+        .map_err(|error| format!("无法解析模型回复：{error}"))?;
+    result
+        .choices
+        .into_iter()
+        .next()
+        .map(|choice| choice.message.content)
+        .ok_or_else(|| "模型未返回回复内容".to_string())
 }
 
 fn locate_llama_server(statuses: &[engine_manager::EngineStatus]) -> Result<PathBuf, String> {
@@ -953,11 +1016,14 @@ fn canonical_engine_id(engine: &str) -> &'static str {
 }
 
 fn main() {
+    let schedule_stop = Arc::new(AtomicBool::new(false));
+    let setup_schedule_stop = schedule_stop.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(RuntimeState::default())
         .manage(ModelDownloadState::default())
         .manage(MediaGenerationState::default())
+        .manage(schedule_stop.clone())
         .invoke_handler(tauri::generate_handler![
             engine_statuses,
             engine_install_supported,
@@ -997,8 +1063,26 @@ fn main() {
             stop_local_model,
             chat_complete,
             load_chat_sessions,
-            save_chat_sessions
+            save_chat_sessions,
+            list_scheduled_tasks,
+            create_scheduled_task,
+            set_scheduled_task_enabled,
+            delete_scheduled_task
         ])
-        .run(tauri::generate_context!())
-        .expect("无法启动本地 AI 引擎管理器");
+        .setup(move |app| {
+            schedule_backend::skip_missed_runs(&app.handle())?;
+            schedule_backend::start_worker(
+                app.handle().clone(),
+                setup_schedule_stop,
+                execute_scheduled_prompt,
+            );
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("无法构建本地 AI 引擎管理器")
+        .run(move |_app_handle, event| {
+            if matches!(event, RunEvent::Exit) {
+                schedule_stop.store(true, Ordering::Release);
+            }
+        });
 }

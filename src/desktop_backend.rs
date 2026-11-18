@@ -50,6 +50,16 @@ pub struct SystemSnapshot {
     pub used_memory_bytes: u64,
     pub total_memory_bytes: u64,
     pub available_memory_bytes: u64,
+    pub model_processes: Vec<ModelProcessSnapshot>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelProcessSnapshot {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_usage_percent: f32,
+    pub memory_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -87,6 +97,8 @@ pub struct AppSettings {
     pub api_port: u16,
     #[serde(default)]
     pub comfyui_directory: Option<String>,
+    #[serde(default)]
+    pub creations_directory: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -96,6 +108,7 @@ impl Default for AppSettings {
             appearance: "system".to_string(),
             api_port: 8686,
             comfyui_directory: None,
+            creations_directory: None,
         }
     }
 }
@@ -292,6 +305,17 @@ pub fn save_settings(app: &AppHandle, settings: AppSettings) -> Result<AppSettin
         .map_err(|error| format!("无法确认模型目录：{error}"))?;
     let mut settings = settings;
     settings.model_directory = canonical.display().to_string();
+    settings.creations_directory = match settings.creations_directory.take() {
+        Some(directory) if !directory.trim().is_empty() => {
+            let directory = PathBuf::from(directory.trim());
+            fs::create_dir_all(&directory).map_err(|error| format!("无法创建作品目录：{error}"))?;
+            let canonical = directory
+                .canonicalize()
+                .map_err(|error| format!("无法确认作品目录：{error}"))?;
+            Some(canonical.display().to_string())
+        }
+        _ => None,
+    };
     let path = settings_path(app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("无法创建设置目录：{error}"))?;
@@ -378,15 +402,48 @@ pub fn system_snapshot() -> SystemSnapshot {
             used_memory_bytes: 0,
             total_memory_bytes: 0,
             available_memory_bytes: 0,
+            model_processes: Vec::new(),
         };
     };
     system.refresh_cpu_usage();
     system.refresh_memory();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    let mut model_processes: Vec<ModelProcessSnapshot> = system
+        .processes()
+        .values()
+        .filter_map(|process| {
+            let executable_name = process
+                .exe()
+                .and_then(Path::file_name)
+                .unwrap_or_else(|| process.name());
+            let executable_name = executable_name.to_string_lossy();
+            let normalized = executable_name.to_ascii_lowercase();
+            let display_name = if normalized.contains("llama-server") {
+                "llama-server"
+            } else if normalized == "sd-cli"
+                || normalized == "sd-cli.exe"
+                || normalized.contains("stable-diffusion")
+            {
+                "stable-diffusion.cpp"
+            } else {
+                return None;
+            };
+            Some(ModelProcessSnapshot {
+                pid: process.pid().as_u32(),
+                name: display_name.to_string(),
+                cpu_usage_percent: process.cpu_usage(),
+                memory_bytes: process.memory(),
+            })
+        })
+        .collect();
+    model_processes
+        .sort_by(|left, right| left.name.cmp(&right.name).then(left.pid.cmp(&right.pid)));
     SystemSnapshot {
         cpu_usage_percent: system.global_cpu_usage(),
         used_memory_bytes: system.used_memory(),
         total_memory_bytes: system.total_memory(),
         available_memory_bytes: system.available_memory(),
+        model_processes,
     }
 }
 
@@ -738,17 +795,26 @@ pub fn scan_comfyui_models(directory: &str) -> Result<ComfyUiModelScan, String> 
     })
 }
 
-pub fn open_creations_directory(app: &AppHandle, kind: &str) -> Result<String, String> {
+pub fn creations_directory(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
     let subdirectory = match kind {
         "image" => "images",
         "video" => "videos",
         _ => return Err("作品类型无效；仅支持 image 或 video".to_string()),
     };
-    let directory = app_data_dir(app)?.join("creations").join(subdirectory);
+    let settings = load_settings(app)?;
+    let root = match settings.creations_directory {
+        Some(directory) if !directory.trim().is_empty() => PathBuf::from(directory),
+        _ => app_data_dir(app)?.join("creations"),
+    };
+    let directory = root.join(subdirectory);
     fs::create_dir_all(&directory).map_err(|error| format!("无法创建作品目录：{error}"))?;
-    let directory = directory
+    directory
         .canonicalize()
-        .map_err(|error| format!("无法确认作品目录：{error}"))?;
+        .map_err(|error| format!("无法确认作品目录：{error}"))
+}
+
+pub fn open_creations_directory(app: &AppHandle, kind: &str) -> Result<String, String> {
+    let directory = creations_directory(app, kind)?;
 
     #[cfg(target_os = "windows")]
     let mut command = {
@@ -1319,7 +1385,14 @@ fn percent_encode_path(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    #[test]
+    fn settings_without_creations_directory_remain_compatible() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"modelDirectory":"/tmp/models","appearance":"system","apiPort":8686}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.creations_directory, None);
+    }
     #[test]
     fn repository_and_file_validation_blocks_path_traversal() {
         assert!(is_safe_repo_id("Qwen/Qwen3-4B-GGUF"));

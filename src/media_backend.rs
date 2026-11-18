@@ -14,7 +14,7 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 const MAX_MEDIA_FILES_PER_BUNDLE: usize = 32;
 const MAX_MEDIA_BUNDLE_BYTES: u64 = 200 * 1024 * 1024 * 1024;
@@ -782,17 +782,7 @@ fn find_named_file(root: &Path, name: &str, max_depth: usize) -> Option<PathBuf>
 }
 
 fn output_path(app: &AppHandle, kind: &str) -> Result<PathBuf, String> {
-    let sub = if kind == "image" { "images" } else { "videos" };
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("creations")
-        .join(sub);
-    fs::create_dir_all(&directory).map_err(|error| format!("无法创建作品目录：{error}"))?;
-    let directory = directory
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let directory = crate::desktop_backend::creations_directory(app, kind)?;
     for _ in 0..4 {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)

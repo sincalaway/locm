@@ -2,6 +2,14 @@
 
 一个独立的 Rust MVP：保留原有 `llama-server` 配置启动示例，并新增两个彼此独立的本地引擎安装流程。它不是 LocModel 的源码，也不包含 LocModel 品牌资产或官方背书。
 
+## v0.2.7 更新
+
+- Agent 可在无需启动模型或选择工作区时，直接回答简单问候、身份和能力问题；具体工作任务仍需要本地模型与工作区。
+- Agent 请求前检查本机模型的 `/health`；连接、超时和 HTTP 错误会分别报告，并保留长度受限的服务端诊断信息。
+- 发布验证包括 23 项默认 Rust 测试、70 项桌面 Rust 测试、18 项 JavaScript 回归测试、格式检查、Linux x86_64 原生构建和 Windows x64 GNU Linux 交叉构建。Windows 未在实机启动验证。
+- 增加可重复的 Windows x64 GNU 交叉构建入口，规范化 Rustc/MinGW 的 `Kernel32`/`kernel32` 大小写差异；该链接器包装器只由专用脚本启用，不改变常规构建或 MSVC CI。
+- 便携发布包不包含引擎或模型权重。
+
 ## v0.2.6 更新
 
 - 主要页面会随窗口宽度重排，在 320–1920 CSS px 检查视口下未发现页面级横向溢出；窄屏聊天历史列表改为可收起抽屉。
@@ -60,7 +68,7 @@ cargo build --locked --release --features desktop --bin local-engine-manager
 
 当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。本次 Linux x86_64 Tauri release 桌面程序已成功构建。Windows x64 GNU GUI EXE 已从 Linux 交叉构建，测试包包含需与 EXE 同目录的 `WebView2Loader.dll`；Windows 还需要 WebView2 Runtime。Windows 未在真实 Windows 设备启动验证。
 
-**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。此前 main 版本通过 23 项默认测试与 58 项桌面测试，并完成 Linux x86_64 release 构建和 Windows x64 GNU 交叉构建。本次 Agent 搜索改动通过 23 项默认测试与 64 项桌面目标测试，Rust 格式检查和 Agent JavaScript 语法检查通过；本次重新构建了 Linux x86_64 release 桌面程序，并从 Linux 交叉构建 Windows x64 GNU GUI EXE。便携测试包仅保存在被 Git 忽略的 `target/delivery/agent-search-v0.2.4-20261119/` 中，未创建 GitHub Release；Windows 未在真实 Windows 设备启动验证，运行还需要 WebView2 Runtime。本次未构建 macOS。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
+**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。v0.2.7 包含 Agent 问候/身份/能力问题的直接答复，以及本地模型健康检查和网络/HTTP 错误诊断改进；本版验证结果和平台限制见上方更新说明及[部署与运行手册](docs/DEPLOYMENT.md)。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 
 ## 使用命令
 
@@ -114,5 +122,9 @@ cargo test --locked --features desktop --bin local-engine-manager
 cargo build --release --locked
 cargo check --features desktop --bin local-engine-manager
 ```
+
+### Linux 上交叉构建 Windows x64 GNU 桌面版
+
+安装 MinGW-w64 与 `x86_64-pc-windows-gnu` Rust target 后运行 `./scripts/build-windows-gnu.sh`。该脚本使用仓库内的 `scripts/windows-gnu-linker.sh`，只把 Rustc 发给 GNU linker 的 `-lKernel32` 规范为 MinGW 使用的 `-lkernel32`；其他链接参数保持不变。可用 `LOCM_WINDOWS_GNU_LINKER` 指定 MinGW GCC driver。此配置仅作用于该脚本的子进程，Windows 原生 MSVC 构建和普通 Cargo 构建不受影响。输出位于 `target/x86_64-pc-windows-gnu/release/local-engine-manager.exe`。
 
 许可证见 [`LICENSE`](LICENSE)。

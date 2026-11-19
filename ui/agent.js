@@ -365,13 +365,11 @@
     const recoveryLocked = task?.execution?.recovery?.mode === "plan_only";
     const input = $("#agent-input");
     const button = $("#agent-send");
-    input.placeholder = !state.runtime.running
-      ? "先在“运行”页面启动一个本地模型"
-      : !currentWorkspace()
-        ? "先选择工作文件夹，再描述你想完成的任务"
-        : "描述你想完成的任务…（Enter 发送，Shift+Enter 换行）";
+    input.placeholder = !state.runtime.running || !currentWorkspace()
+      ? "可直接问候或问我是谁；工作区任务需启动模型并选择文件夹"
+      : "描述你想完成的任务…（Enter 发送，Shift+Enter 换行）";
     input.disabled = busy || pending || recoveryLocked;
-    button.disabled = busy || pending || recoveryLocked || !state.runtime.running || !currentWorkspace() || !input.value.trim() && !state.attachments.length;
+    button.disabled = busy || pending || recoveryLocked || !input.value.trim() && !state.attachments.length;
     $("#agent-attach").disabled = busy || pending || recoveryLocked;
     $("#agent-choose-workspace").disabled = busy;
   }
@@ -979,8 +977,6 @@
     event.preventDefault();
     const prompt = $("#agent-input").value.trim();
     if (!prompt && !state.attachments.length) return;
-    if (!state.workspace) { notify("请先选择工作文件夹。", true); return; }
-    if (!state.runtime.running) { notify("请先在“运行”页面启动一个本地模型。", true); return; }
     if (state.busy) return;
     let task = activeTask();
     if (task?.pendingAction) { notify("请先批准或拒绝当前待确认操作。", true); return; }
@@ -991,6 +987,20 @@
     const attachmentContent = state.attachments.map((item) => `\n\n[用户附件：${item.name}]\n${item.text}`).join("");
     const userText = `${prompt || "请阅读我附加的文件并完成任务。"}${attachmentContent}`;
     if (bytes(userText).length > 30000) { notify("任务说明和附件文本总量不能超过 30 KB。", true); return; }
+    const directReply = LocmAgentIntent.directReply(prompt, state.attachments.length > 0);
+    if (directReply) {
+      const directTask = createTask(prompt, userText);
+      directTask.needsPlan = false;
+      directTask.status = "completed";
+      directTask.turns.push({ role: "assistant", content: JSON.stringify({ type: "message", message: directReply }) });
+      $("#agent-input").value = "";
+      state.attachments = [];
+      addEntry(directTask, "assistant", directReply);
+      render();
+      return;
+    }
+    if (!state.workspace) { notify("请先选择工作文件夹。", true); return; }
+    if (!state.runtime.running) { notify("请先在“运行”页面启动一个本地模型。", true); return; }
     if (!task) task = createTask(prompt || state.attachments[0]?.name || "新任务", userText);
     else {
       if (task.workspace !== state.workspace) {

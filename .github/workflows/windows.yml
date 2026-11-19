@@ -34,3 +34,19 @@ jobs:
           path: target/x86_64-pc-windows-msvc/release/llama-server-launcher-rs.exe
           if-no-files-found: error
           retention-days: 14
+  windows-x64-gnu-cross:
+    name: Cross-build Windows x64 GNU desktop from Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install stable Rust and Windows GNU target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install --yes gcc-mingw-w64-x86-64
+      - name: Build with the maintained Kernel32 linker normalization
+        run: ./scripts/build-windows-gnu.sh
+      - name: Verify Windows x64 executable format
+        run: x86_64-w64-mingw32-objdump -f target/x86_64-pc-windows-gnu/release/local-engine-manager.exe | grep 'pei-x86-64'

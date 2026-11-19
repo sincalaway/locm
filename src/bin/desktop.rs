@@ -226,6 +226,195 @@ fn parse_scheduled_response_body<R: Read>(
     serde_json::from_slice(&bytes).map_err(|error| format!("无法解析模型回复：{error}"))
 }
 
+const MAX_CHAT_HTTP_ERROR_BODY_BYTES: u64 = 4 * 1024;
+
+fn format_chat_http_error(status: reqwest::StatusCode, body: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(body)
+        .chars()
+        .take(1000)
+        .collect::<String>();
+    if detail.trim().is_empty() {
+        format!("本机 llama-server 返回 HTTP {status}")
+    } else {
+        format!("本机 llama-server 返回 HTTP {status}：{detail}")
+    }
+}
+
+fn read_chat_http_error(response: reqwest::blocking::Response) -> String {
+    let status = response.status();
+    let mut body = Vec::new();
+    let _ = response
+        .take(MAX_CHAT_HTTP_ERROR_BODY_BYTES)
+        .read_to_end(&mut body);
+    format_chat_http_error(status, &body)
+}
+
+const AGENT_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+const AGENT_MODEL_GUIDANCE: &str =
+    "Agent 依赖运行页已启动并可访问的本地模型；请在“运行”页面启动模型，并确认服务仍在运行。";
+
+fn format_agent_transport_error(stage: &str, url: &str, error: &reqwest::Error) -> String {
+    let cause = if error.is_connect() {
+        "连接失败"
+    } else if error.is_timeout() {
+        "请求超时"
+    } else {
+        "发送阶段失败，未获得可用 HTTP 响应"
+    };
+    format!(
+        "Agent 本地模型{stage}发送阶段失败（{cause}），目标地址：{url}。{AGENT_MODEL_GUIDANCE} 底层错误详情：{error}"
+    )
+}
+
+fn format_agent_http_error(stage: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(body)
+        .chars()
+        .take(1000)
+        .collect::<String>();
+    if detail.trim().is_empty() {
+        format!(
+            "Agent 本地模型{stage}已收到 HTTP {status} 响应，但请求未成功。{AGENT_MODEL_GUIDANCE}"
+        )
+    } else {
+        format!(
+            "Agent 本地模型{stage}已收到 HTTP {status} 响应，但请求未成功。{AGENT_MODEL_GUIDANCE} 服务端错误详情：{detail}"
+        )
+    }
+}
+
+fn read_agent_http_error(response: reqwest::blocking::Response, stage: &str) -> String {
+    let status = response.status();
+    let mut body = Vec::new();
+    let _ = response
+        .take(MAX_CHAT_HTTP_ERROR_BODY_BYTES)
+        .read_to_end(&mut body);
+    format_agent_http_error(stage, status, &body)
+}
+
+fn check_agent_model_health(
+    client: &reqwest::blocking::Client,
+    host: &str,
+    port: u16,
+) -> Result<(), String> {
+    let url = format!("http://{host}:{port}/health");
+    let response = client
+        .get(&url)
+        .timeout(AGENT_HEALTH_TIMEOUT)
+        .send()
+        .map_err(|error| format_agent_transport_error("健康检查请求", &url, &error))?;
+    if !response.status().is_success() {
+        return Err(read_agent_http_error(response, "健康检查"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod chat_http_error_tests {
+    use super::format_chat_http_error;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn preserves_a_bounded_server_error_detail() {
+        let message = format_chat_http_error(StatusCode::BAD_REQUEST, b"context too long");
+        assert!(message.contains("HTTP 400 Bad Request"));
+        assert!(message.contains("context too long"));
+    }
+
+    #[test]
+    fn limits_server_error_detail_and_handles_empty_bodies() {
+        let body = vec![b'x'; 1200];
+        let message = format_chat_http_error(StatusCode::BAD_REQUEST, &body);
+        assert!(message.ends_with(&"x".repeat(1000)));
+        assert!(!message.ends_with(&"x".repeat(1001)));
+        assert_eq!(
+            format_chat_http_error(StatusCode::BAD_REQUEST, b"  "),
+            "本机 llama-server 返回 HTTP 400 Bad Request"
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_local_model_diagnostics_tests {
+    use super::{
+        check_agent_model_health, format_agent_http_error, format_agent_transport_error,
+        AGENT_MODEL_GUIDANCE,
+    };
+    use reqwest::{blocking::Client, StatusCode};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    fn serve_once(response: &'static str) -> (u16, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (port, worker)
+    }
+
+    fn client() -> Client {
+        Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn health_probe_accepts_a_successful_local_health_response() {
+        let (port, worker) =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+        assert!(check_agent_model_health(&client(), "127.0.0.1", port).is_ok());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn health_probe_reports_http_responses_separately_from_transport_failures() {
+        let (port, worker) = serve_once(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 8\r\nConnection: close\r\n\r\nbusy now",
+        );
+        let error = check_agent_model_health(&client(), "127.0.0.1", port).unwrap_err();
+        worker.join().unwrap();
+        assert!(error.contains("HTTP 503 Service Unavailable"));
+        assert!(error.contains("busy now"));
+        assert!(error.contains(AGENT_MODEL_GUIDANCE));
+        assert!(!error.contains("发送失败"));
+    }
+
+    #[test]
+    fn connection_failure_keeps_transport_detail_and_local_model_guidance() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}/health");
+        let error = client().get(&url).send().unwrap_err();
+        assert!(error.is_connect());
+        let message = format_agent_transport_error("健康检查请求", &url, &error);
+        assert!(message.contains("发送阶段失败"));
+        assert!(message.contains("连接失败"));
+        assert!(message.contains(&url));
+        assert!(message.contains(AGENT_MODEL_GUIDANCE));
+        assert!(message.contains(&error.to_string()));
+    }
+
+    #[test]
+    fn inference_http_error_retains_status_and_bounded_server_detail() {
+        let message =
+            format_agent_http_error("推理请求", StatusCode::BAD_REQUEST, b"context too long");
+        assert!(message.contains("HTTP 400 Bad Request"));
+        assert!(message.contains(AGENT_MODEL_GUIDANCE));
+        assert!(message.contains("context too long"));
+        assert!(!message.contains("发送失败"));
+    }
+}
+
 #[cfg(test)]
 mod scheduled_prompt_response_tests {
     use super::{parse_scheduled_response_body, MAX_SCHEDULED_RESPONSE_BYTES};
@@ -1398,14 +1587,31 @@ async fn chat_complete(
         let settings = desktop_backend::load_settings(&app)?;
         let status = runtime_status_sync(&app, settings.api_port)?;
         if !status.running {
-            return Err("本地模型尚未启动；请先到“运行”页面启动一个 GGUF 模型".to_string());
+            let detail = status
+                .last_error
+                .as_deref()
+                .map(|error| format!("运行状态详情：{error}"))
+                .unwrap_or_default();
+            return Err(format!(
+                "Agent 无法请求本机模型。{AGENT_MODEL_GUIDANCE} {detail}"
+            ));
         }
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(2))
+            .build()
+            .map_err(|error| {
+                format!(
+                    "Agent 无法初始化本机模型客户端。{AGENT_MODEL_GUIDANCE} 底层错误详情：{error}"
+                )
+            })?;
+        check_agent_model_health(&client, &status.bind_host, settings.api_port)?;
         let url = format!(
             "http://{}:{}/v1/chat/completions",
             status.bind_host, settings.api_port
         );
-        let response = reqwest::blocking::Client::new()
-            .post(url)
+        let response = client
+            .post(&url)
             .json(&serde_json::json!({
                 "model": "local-model",
                 "messages": messages,
@@ -1414,8 +1620,10 @@ async fn chat_complete(
                 "stream": false
             }))
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|error| format!("本地推理请求失败：{error}"))?;
+            .map_err(|error| format_agent_transport_error("推理请求", &url, &error))?;
+        if !response.status().is_success() {
+            return Err(read_agent_http_error(response, "推理请求"));
+        }
         let result: ChatResponse = response
             .json()
             .map_err(|error| format!("无法解析模型回复：{error}"))?;
@@ -1642,8 +1850,10 @@ fn execute_scheduled_prompt(app: &AppHandle, prompt: &str) -> Result<String, Str
             "stream": false
         }))
         .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| format!("本地推理请求失败：{error}"))?;
+        .map_err(|error| format!("连接本机 llama-server 失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(read_chat_http_error(response));
+    }
     let content_length = response.content_length();
     let result = parse_scheduled_response_body(response, content_length)?;
     result

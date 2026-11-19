@@ -5,7 +5,7 @@
 - Agent 内部继续指令和工作区工具结果不再被误判为新用户任务；计划已显示后不会重复规划，模型重复输出计划时只进行一次有限纠偏，仍异常则安全暂停而不执行新工具。
 - 本地模型若在执行阶段返回普通文本或含糊的 JSON，Agent 只请求一次格式纠正；仍不合规就安全暂停并明确说明没有运行工具或命令。Agent 新增专用 `create_folder` JSON 工具，通过原生工作区后端创建空目录及缺失父目录；只接受相对路径，拒绝路径穿越和符号链接，目标已存在时幂等返回，不通过 shell，也不额外弹确认。
 - Agent 新增专用 `edit_file` JSON 工具，用户要求修改已有文件时优先按唯一精确 `old_text`/`new_text` 替换；缺失或多处匹配会安全失败。只允许工作区内现有 UTF-8 普通文件，拒绝路径穿越和符号链接；通过同目录临时文件原子替换，并沿用应用审批卡与系统原生确认。
-- Windows x64 新增真正的 Tauri/NSIS 安装程序；通过 Linux 上的 `cargo-xwin` 交叉构建 MSVC 目标，**没有在真实 Windows 设备启动验证**。安装器缺少 WebView2 Runtime 时会联网下载并运行微软引导安装器；Runtime 仍是应用运行所需组件。
+- Windows x64 新增真正的 Tauri/NSIS 安装程序；通过 Linux 上的 `cargo-xwin` 交叉构建 MSVC 目标，**没有在真实 Windows 设备启动验证**。安装器缺少 WebView2 Runtime 时会联网下载并运行微软引导安装器；Runtime 仍是应用运行所需组件。MSVC 应用还导入 `VCRUNTIME140.dll`；NSIS 未捆绑 VC++ Runtime，若系统缺少它，需安装[微软 VC++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)。
 - 发布包含 Linux x86_64 原生桌面包、Windows x64 NSIS 安装器，以及明确标为未实机验证的 Windows x64 GNU 便携测试 ZIP；所有资产均不包含引擎或模型权重，`SHA256SUMS.txt` 提供校验值。
 - 自动回归：默认 Rust 23/23、desktop Rust 84/84、JavaScript 44/44 通过；`create_folder` 覆盖空目录、幂等、冲突、越界/符号链接拒绝和原生派发；`edit_file` 覆盖唯一精确替换、待确认不写入、缺失/多重/重叠匹配、越界/符号链接拒绝、原子替换、审批派发和确认卡。还验证创建目录/修改文件意图路由以及内部工具结果续接。Agent 工具仅做本机单元/协议测试，未在用户的 Windows 电脑上运行验证。
 
@@ -87,7 +87,7 @@ cargo run --features desktop --bin local-engine-manager
 cargo build --locked --release --features desktop --bin local-engine-manager
 ```
 
-`tauri.conf.json` 为发行构建启用 Tauri NSIS bundle，`./scripts/build-windows-nsis.sh` 会在 Linux 上使用 `cargo-xwin` 和 `x86_64-pc-windows-msvc` 构建 Windows x64 安装器，输出位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 运行 LocM 仍需要 WebView2 Runtime；安装器配置为在 Runtime 缺失时联网下载并运行微软 Bootstrapper，因此它不是离线 Runtime 包。本版 Windows 安装器是交叉构建产物，未在真实 Windows 设备启动验证。
+`tauri.conf.json` 为发行构建启用 Tauri NSIS bundle，`./scripts/build-windows-nsis.sh` 会在 Linux 上使用 `cargo-xwin` 和 `x86_64-pc-windows-msvc` 构建 Windows x64 安装器，输出位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 运行 LocM 仍需要 WebView2 Runtime；安装器配置为在 Runtime 缺失时联网下载并运行微软 Bootstrapper，因此它不是离线 Runtime 包。MSVC 应用的 PE 导入表还包含 `VCRUNTIME140.dll`；NSIS 包不包含 VC++ Redistributable，若系统缺少该运行库，需先安装[微软 VC++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)。本版 Windows 安装器是交叉构建产物，未在真实 Windows 设备启动验证。
 
 **尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览、Linux `.deb`/AppImage 与 Windows MSI。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。v0.2.7 包含 Agent 问候/身份/能力问题的直接答复，以及本地模型健康检查和网络/HTTP 错误诊断改进；本版验证结果和平台限制见上方更新说明及[部署与运行手册](docs/DEPLOYMENT.md)。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 
@@ -126,7 +126,7 @@ cargo run --locked -- .\engine.json
 ## 当前范围与限制
 
 - **已实现：** 两套独立引擎的 Release 查询、下载进度、重试、SHA-256 校验及安全解包；桌面版含硬件/磁盘信息、GGUF 管理与 Hugging Face 下载、`llama-server` 管理和本机 SSE 流式多轮聊天、只读系统监测、应用内一次/每小时/每天/每周/自定义间隔定时提示词任务与可选的多渠道推送适配器、工作区文件操作，以及 stable-diffusion.cpp 媒体组件下载、文生图/固定 33 帧 Wan 文生视频接线和 PNG 作品预览/只读索引。
-- **尚未实现：** 操作系统后台调度/系统通知；推送渠道真实服务端点和实际送达验证（QQ 仅有通用 Webhook）；GPU 加速选择、Safetensors 转 GGUF/量化、分片 GGUF、图生图、媒体生成进度、视频预览、旧引擎版本清理，以及可分发的安装包。
+- **尚未实现：** 操作系统后台调度/系统通知；推送渠道真实服务端点和实际送达验证（QQ 仅有通用 Webhook）；GPU 加速选择、Safetensors 转 GGUF/量化、分片 GGUF、图生图、媒体生成进度、视频预览、旧引擎版本清理，以及其他安装格式（Windows MSI、Linux `.deb`/AppImage）。
 - 本地聊天模型目前以 CPU 参数启动，聊天页通过 OpenAI 兼容 SSE 实时显示回复；Agent 与定时提示词仍使用完整响应接口。上下文默认为“自动”（不显式传入 `--ctx-size`，使用该服务器与模型的默认值），也可选择 8K/16K/32K/64K；大上下文或大模型可能无法加载。速度、首次加载与内存占用均为估算，不是本机基准测试。
 - Hugging Face 搜索与文件下载需要联网；下载流程会按 API 文件元数据检查 SHA-256、文件名和磁盘余量。下载前仍应确认仓库来源、模型卡与许可证。
 - stable-diffusion.cpp 引擎程序与模型权重分开管理。图像/视频生成命令已接线，PNG 作品可在应用内预览和浏览；但尚未用真实权重验证生成兼容性。当前媒体引擎是 CPU 版，不调用 GPU。

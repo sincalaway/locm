@@ -138,6 +138,7 @@
             <div class="option-row"><div><strong>局域网访问</strong><small id="lan-access-note">默认关闭、仅绑定 127.0.0.1。开启后同一私有网段设备可访问未认证 API；只在可信网络开启，且仅绑定一个私有 IPv4 地址。</small></div><label class="switch"><input type="checkbox" id="lan-access" /><span></span></label></div>
             <div class="estimate-box"><div><small>生成速度 <em>本机未实测</em></small><strong id="estimated-speed">未实测</strong></div><div><small>首次加载 <em>本机未实测</em></small><strong id="estimated-load">未实测</strong></div><p>此版本没有本机基准测试；不预设 token/s 或加载时长。模型大小与内存只用于粗略资源参考。</p></div>
             <div class="run-actions"><button class="button primary" id="start-model" disabled>启动模型</button><button class="button danger" id="stop-model" disabled>停止</button></div>
+            <div id="run-prerequisite-note" class="muted small" role="status" aria-live="polite"></div>
             <div id="run-status" class="muted small">模型未启动</div><div id="run-error" class="error-box" hidden></div>
           </section>
         </div>

@@ -52,7 +52,7 @@ cargo build --locked --release --features desktop --bin local-engine-manager
 
 当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。本轮 Linux x86_64 桌面程序已构建并在隔离图形环境启动检查；Windows x64 GUI EXE 已从 Linux 交叉构建，随包提供的 `WebView2Loader.dll` 需与 EXE 放在同一目录，Windows 仍需安装 WebView2 Runtime。Windows 未在真实 Windows 设备启动验证。
 
-**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 的命令确认是 UI 流程，不是操作系统级沙箱；命令可能访问工作区外文件或网络。本轮源码通过 23 项默认测试与 56 项桌面测试；Windows x64 桌面程序由 GNU 工具链交叉构建，未在真实 Windows 设备运行；本次没有构建 macOS 版本。发布包不包含 AI 模型、媒体或引擎权重；没有使用真实模型/媒体权重验证推理或图像/视频生成。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
+**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 的命令确认是 UI 流程，不是操作系统级沙箱；命令可能访问工作区外文件或网络。v0.2.3 源码通过 23 项默认测试与 56 项桌面测试；Linux x86_64 桌面可执行文件从此版本构建。Windows x64 GUI EXE 由 GNU 工具链交叉构建，未在真实 Windows 设备运行；本次未构建 macOS。没有使用真实模型/媒体权重验证推理或图像/视频生成，发布包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 
 ## 使用命令
 

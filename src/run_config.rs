@@ -45,7 +45,14 @@ pub struct ServerCapabilities {
 fn has_option(help: &str, option: &str) -> bool {
     help.lines().any(|line| {
         line.split(|character: char| character.is_whitespace() || character == ',')
-            .any(|token| token.trim_matches(['[', ']', '=']) == option)
+            .any(|token| {
+                token
+                    .trim_matches(['[', ']', '='])
+                    .split('=')
+                    .next()
+                    .unwrap_or_default()
+                    == option
+            })
     })
 }
 
@@ -212,6 +219,13 @@ mod tests {
             parse_capabilities("--host HOST\n--port PORT\n--ctx-size N\n--flash-attention on\n");
         assert!(!missing.flash_attention);
         assert!(!missing.cache_type_k && !missing.cache_type_v);
+        let equals_form = parse_capabilities(
+            "--model=FILE\n--host=HOST\n--port=PORT\n--ctx-size=SIZE\n--flash-attn=MODE\n--cache-type-k=TYPE\n--cache-type-v=TYPE\n",
+        );
+        assert!(equals_form.model && equals_form.host && equals_form.port);
+        assert!(equals_form.ctx_size && equals_form.flash_attention);
+        assert!(equals_form.cache_type_k && equals_form.cache_type_v);
+        assert!(!parse_capabilities("--ctx-size-extra N").ctx_size);
     }
 
     #[test]

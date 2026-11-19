@@ -204,9 +204,14 @@
     catch { showToast("运行偏好无法保存到本机浏览器存储", "error"); }
   }
   function renderLanAccessNote() {
-    $("#lan-access-note").textContent = state.runPreferences.lanAccess
-      ? "已开启：启动时只绑定私有 IPv4 地址；同一私有网段设备可访问未认证 API。仅在可信网络使用。"
-      : "默认关闭、仅绑定 127.0.0.1。开启后同一私有网段设备可访问未认证 API；只在可信网络开启，且仅绑定一个私有 IPv4 地址。";
+    const capabilities = state.runCapabilities;
+    $("#lan-access-note").textContent = !capabilities
+      ? "正在核实当前服务端是否支持 --host 与 --port；确认前保持本机访问。"
+      : !(capabilities.host && capabilities.port)
+        ? "当前服务端未确认支持 --host 与 --port，因此局域网访问不可用；为安全起见保持仅本机访问。"
+        : state.runPreferences.lanAccess
+          ? "已开启：启动时只绑定私有 IPv4 地址；同一私有网段设备可访问未认证 API。仅在可信网络使用。"
+          : "默认关闭、仅绑定 127.0.0.1。开启后同一私有网段设备可访问未认证 API；只在可信网络开启，且仅绑定一个私有 IPv4 地址。";
   }
   function renderRunPreferences() {
     $$('input[name="run-context"]').forEach((input) => { input.checked = input.value === state.runPreferences.context; });
@@ -299,7 +304,24 @@
     active.push(effective.lanAccess ? "私有 IPv4 局域网绑定" : "仅 127.0.0.1");
     if (effective.autoRestart) active.push("崩溃后最多自动重启 3 次（1/3/8 秒退避）");
     $("#run-effective-options").textContent = `当前设置：${active.join("；")}。思考行为不强制覆盖模型模板。`;
-    $("#start-model").disabled = Boolean(state.runtime.running) || !$("#run-model-select").value || !capabilities?.host || !capabilities?.port;
+    const modelSelected = Boolean($("#run-model-select").value);
+    const requiredArgsSupported = Boolean(capabilities?.model && capabilities?.host && capabilities?.port);
+    const startButton = $("#start-model");
+    startButton.disabled = Boolean(state.runtime.running) || !modelSelected || !requiredArgsSupported;
+    const prerequisiteNote = $("#run-prerequisite-note");
+    const blockedReason = !capabilities
+      ? "正在检查已安装 llama-server 的参数能力…"
+      : !requiredArgsSupported
+        ? "无法启动：未从已安装 llama-server 的 --help 确认必需的 --model、--host、--port 参数。请先安装或检查下方的 llama.cpp 引擎；不会发送未确认的参数。"
+        : state.runtime.running
+          ? "模型已在运行；如需启动其他模型，请先停止当前模型。"
+          : !modelSelected
+            ? state.models.length
+              ? "请先从上方选择一个本机 GGUF 模型。"
+              : "尚无本机 GGUF 模型；请到“模型”页导入文件，或手动选择模型并确认下载。"
+            : "启动条件已满足；只会传入当前服务器已确认支持的参数。";
+    prerequisiteNote.textContent = blockedReason;
+    startButton.title = startButton.disabled ? blockedReason : "";
   }
   function updateRunEstimates() {
     const model = state.models.find((item) => item.name === $("#run-model-select")?.value);
@@ -1194,17 +1216,34 @@
       link.href = `https://huggingface.co/${model.repoId.split("/").map(encodeURIComponent).join("/")}`;
       link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "打开 Hugging Face 仓库 ↗";
       actions.append(link);
+      const fileBox = document.createElement("div");
+      fileBox.className = "hf-files recommendation-files";
+      fileBox.hidden = true;
       if (category === "chat" || category === "all") {
         const button = document.createElement("button"); button.className = "button secondary"; button.textContent = "查看 GGUF 文件";
-        button.addEventListener("click", () => loadHfFiles(model.repoId));
+        button.addEventListener("click", async () => {
+          button.disabled = true; button.textContent = "正在读取文件…";
+          const loading = loadHfFiles(model.repoId, fileBox);
+          fileBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          try { await loading; }
+          finally { button.disabled = false; button.textContent = "查看 GGUF 文件"; }
+        });
         actions.append(button);
       }
       if (category === "image" || category === "video") {
         const button = document.createElement("button"); button.className = "button secondary"; button.textContent = "查看组件并选择下载";
-        button.addEventListener("click", () => loadHfMediaFiles(model.repoId));
+        button.addEventListener("click", async () => {
+          button.disabled = true; button.textContent = "正在读取组件…";
+          const loading = loadHfMediaFiles(model.repoId, [], fileBox);
+          fileBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          try { await loading; }
+          finally { button.disabled = false; button.textContent = "查看组件并选择下载"; }
+        });
         actions.append(button);
       }
-      card.append(details, actions); box.append(card);
+      card.append(details, actions);
+      if (category === "chat" || category === "all" || category === "image" || category === "video") card.append(fileBox);
+      box.append(card);
     });
   }
 
@@ -1307,8 +1346,8 @@
     }
   }
 
-  async function loadHfMediaFiles(repoId, recommendedFiles = []) {
-    const box = $("#hf-files"); box.hidden = false; box.replaceChildren();
+  async function loadHfMediaFiles(repoId, recommendedFiles = [], box = $("#hf-files")) {
+    box.hidden = false; box.replaceChildren();
     const heading = document.createElement("h3"); heading.textContent = `${repoId} · 媒体权重组件`;
     const loading = document.createElement("p"); loading.className = "muted"; loading.textContent = "读取固定版本文件清单…"; box.append(heading, loading);
     try {
@@ -1399,7 +1438,7 @@
     } catch (error) {
       loading.textContent = `读取组件清单失败：${error}`;
       const retry = document.createElement("button"); retry.className = "button secondary"; retry.textContent = "重试读取组件";
-      retry.addEventListener("click", () => loadHfMediaFiles(repoId)); box.append(retry);
+      retry.addEventListener("click", () => loadHfMediaFiles(repoId, recommendedFiles, box)); box.append(retry);
     }
   }
 

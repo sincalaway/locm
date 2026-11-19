@@ -179,6 +179,7 @@ html,body{width:100%;min-width:0}
 .hf-model-summary>strong,.comfyui-model-info>strong{overflow-wrap:anywhere}
 .hf-model-summary>small,.fit-file-note{color:var(--muted);font-size:10px;line-height:1.5;overflow-wrap:anywhere}
 .recommendation-files{padding:10px;border-top:1px solid var(--line);background:var(--surface-alt)}
+.hf-model-card>.hf-files{width:100%;flex:1 0 100%}
 .hf-file-info{margin:6px 0;line-height:1.55;overflow-wrap:anywhere}
 .download-control-row{display:flex;min-width:0;flex-wrap:wrap;gap:7px}
 .download-control-row .button{min-width:0;max-width:100%;white-space:normal}

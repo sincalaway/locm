@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="./app.css" />
   <link rel="stylesheet" href="./agent.css" />
   <link rel="stylesheet" href="./workbench-theme.css" />
+  <link rel="stylesheet" href="./responsive.css" />
   <script src="./app.js" defer></script>
   <script src="./agent_execution.js" defer></script>
   <script src="./agent_context.js" defer></script>
@@ -16,7 +17,7 @@
 <body data-page="overview">
   <div class="app-shell">
     <aside class="sidebar">
-      <a class="brand" href="#overview"><span class="brand-mark">◇</span><span><strong>本地 AI 工作台</strong><small>LOCAL AI DESK</small></span></a>
+      <a class="brand" href="#overview"><span class="brand-mark"><img src="./brand-mark.svg" alt="" aria-hidden="true"></span><span><strong>本地 AI 工作台</strong><small>LOCAL AI DESK</small></span></a>
       <div class="nav-caption">工作区</div>
       <nav class="side-nav" aria-label="主导航">
         <a class="nav-item active" href="#overview" data-page="overview"><span>⌂</span>概览</a>
@@ -30,7 +31,7 @@
         <a class="nav-item" href="#monitor" data-page="monitor"><span>⌁</span>监测</a>
         <a class="nav-item" href="#settings" data-page="settings"><span>☷</span>设置</a>
       </nav>
-      <div class="sidebar-bottom"><div class="local-note"><i></i><div><strong>本地优先</strong><small>聊天内容留在此设备</small></div></div><small class="version">桌面 MVP · 0.2</small></div>
+      <div class="sidebar-bottom"><div class="local-note"><i></i><div><strong>本地优先</strong><small>聊天内容留在此设备</small></div></div><small class="version">LocM · v0.2.6</small></div>
     </aside>
 
     <main class="main-content">
@@ -167,7 +168,7 @@
               <div class="compose-toolbar">
                 <input id="chat-file-input" class="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log,.yaml,.yml,.toml,.xml,.html,.css,.js,.ts,.tsx,.jsx,.rs,.py,.go,.java,.c,.cpp,.h,.sql" />
                 <button class="chat-tool-button" id="attach-files" type="button" title="添加纯文本或代码文件；仅在本机读取，不上传">⌁ 附件</button>
-                <details class="tool-menu"><summary class="chat-tool-button">工具 <b>8</b>⌄</summary><div class="tool-menu-panel"><p>此版本未接入工具调用协议，以下工具不可用：</p><button type="button" disabled title="未接入网页搜索工具/API">网页搜索 · 未接入</button><button type="button" disabled title="没有安全范围受限的文件读取工具">文件读取 · 未接入</button><button type="button" disabled title="不会执行模型生成的代码">代码执行 · 未接入</button><button type="button" disabled title="没有结构化数据分析工具">数据分析 · 未接入</button><button type="button" disabled title="不会执行终端命令">终端命令 · 未接入</button><button type="button" disabled title="没有本地知识库检索后端">知识库 · 未接入</button><button type="button" disabled title="没有联网搜索后端">联网搜索 · 未接入</button><button type="button" disabled title="没有插件调用协议">插件 · 未接入</button></div></details>
+                <details class="tool-menu"><summary class="chat-tool-button">工具说明⌄</summary><div class="tool-menu-panel"><p>普通对话尚未接入工具调用。本机文件列表、读取、文本搜索、新建文件，以及经确认的覆盖、删除和命令，已随应用内置在 Agent 页面，无需另行下载。</p><a class="button secondary" href="#agent">打开 Agent</a><p>网页搜索、知识库等能力尚未实现，需要后续接入相应服务或后端；单独下载模型不会自动提供这些功能。</p></div></details>
                 <button class="chat-tool-button unavailable" type="button" disabled title="未接入经过审批的电脑操作能力；不会控制鼠标、键盘或修改文件">▣ 操作电脑</button>
                 <button class="chat-tool-button unavailable" type="button" disabled title="没有图像模型权重或生成接口">▧ 画图</button>
                 <button class="chat-tool-button unavailable" type="button" disabled title="没有视频模型、任务队列或导出接口">▻ 视频</button>
@@ -175,7 +176,7 @@
                 <details class="chat-settings"><summary class="chat-tool-button">⚙ 对话设置</summary><div class="chat-settings-panel"><label for="chat-temperature">回答随机度 <strong id="chat-temperature-value">0.7</strong></label><input id="chat-temperature" type="range" min="0" max="1.5" step="0.1" value="0.7" /><label class="history-setting"><input id="chat-include-history" type="checkbox" checked />携带最近对话作为上下文（最多 60 条消息）</label><small>使用 llama-server OpenAI 兼容的 SSE 流式接口。设置保存在本机。</small></div></details>
                 <button class="button primary send-chat-button" id="send-chat" type="submit" disabled>发送 ↑</button>
               </div>
-              <div class="chat-capability-note">工具调用、电脑操作、画图/视频和思考开关因后端尚无对应能力而禁用；附件仅支持本机读取的 UTF-8 文本/代码，不支持图片或 PDF。</div>
+              <div class="chat-capability-note">本页不执行工具调用；需要操作本机工作区时请使用已内置的 Agent。附件仅支持本机读取的 UTF-8 文本/代码，不支持图片或 PDF；画图/视频与思考切换在本页不可用。</div>
               <div class="compose-footnote"><span class="muted tiny" id="chat-hint">先在“运行”页面启动模型</span><span class="muted tiny">本机保存 · 实时流式回复</span></div>
             </form>
           </div>

@@ -75,8 +75,18 @@
     state.toastTimer = setTimeout(() => { box.hidden = true; }, 3800);
   }
 
+  function setChatSidebarCollapsed(collapsed) {
+    const layout = $(".chat-layout");
+    const button = $("#toggle-chat-sidebar");
+    layout.classList.toggle("sidebar-collapsed", collapsed);
+    button.title = collapsed ? "展开对话列表" : "收起对话列表";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-expanded", String(!collapsed));
+  }
+
   function setPage(page) {
     const safePage = document.getElementById(`page-${page}`) ? page : "overview";
+    if (safePage === "chat" && window.matchMedia("(max-width: 640px)").matches) setChatSidebarCollapsed(true);
     $$(".page").forEach((view) => view.classList.toggle("active", view.id === `page-${safePage}`));
     document.body.dataset.page = safePage;
     $$(".nav-item").forEach((item) => {
@@ -2581,7 +2591,13 @@
   }
 
   window.addEventListener("hashchange", () => setPage(location.hash.slice(1)));
-  window.addEventListener("resize", () => { if ($("#page-monitor").classList.contains("active")) drawChart(); });
+  let chatCompactWidth = window.matchMedia("(max-width: 640px)").matches;
+  window.addEventListener("resize", () => {
+    const compact = window.matchMedia("(max-width: 640px)").matches;
+    if (compact && !chatCompactWidth && $("#page-chat").classList.contains("active")) setChatSidebarCollapsed(true);
+    chatCompactWidth = compact;
+    if ($("#page-monitor").classList.contains("active")) drawChart();
+  });
   $("#refresh-hardware").addEventListener("click", loadHardware);
   $("#quickstep-refresh-hardware").addEventListener("click", loadHardware);
   $("#quickstep-engine-action").addEventListener("click", (event) => {
@@ -2677,11 +2693,7 @@
     await addChatAttachments([...event.target.files]); event.target.value = "";
   });
   $("#toggle-chat-sidebar").addEventListener("click", () => {
-    const layout = $(".chat-layout");
-    const collapsed = layout.classList.toggle("sidebar-collapsed");
-    $("#toggle-chat-sidebar").title = collapsed ? "展开对话列表" : "收起对话列表";
-    $("#toggle-chat-sidebar").setAttribute("aria-label", $("#toggle-chat-sidebar").title);
-    $("#toggle-chat-sidebar").setAttribute("aria-expanded", String(!collapsed));
+    setChatSidebarCollapsed(!$(".chat-layout").classList.contains("sidebar-collapsed"));
   });
   $("#chat-temperature").addEventListener("input", (event) => {
     state.chatPreferences.temperature = Number(event.target.value);

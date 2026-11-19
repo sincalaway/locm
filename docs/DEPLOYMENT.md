@@ -1,17 +1,17 @@
 # 部署与运行手册
 
-本文说明 v0.2.5 桌面版的系统依赖、便携包启动、首次配置和常见故障。应用基于 Tauri 2：窗口由操作系统提供的 WebView 绘制界面，因此它和应用本身是两回事。Windows 使用 Microsoft Edge WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。缺少相应运行库时，程序可能无法打开窗口。
+本文说明 v0.2.6 桌面版的系统依赖、便携包启动、首次配置和常见故障。应用基于 Tauri 2：窗口由操作系统提供的 WebView 绘制界面，因此它和应用本身是两回事。Windows 使用 Microsoft Edge WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。缺少相应运行库时，程序可能无法打开窗口。
 
 ## 获取的包是什么
 
-当前 Tauri 配置关闭了安装包生成（`bundle.active: false`）。本项目提供的是压缩包中的便携测试程序，不是 MSI、`.deb`、AppImage 或带安装向导的安装器。v0.2.5 当前本地交付目录中生成的压缩包名称与内容为：
+当前 Tauri 配置关闭了安装包生成（`bundle.active: false`）。本项目提供的是压缩包中的便携测试程序，不是 MSI、`.deb`、AppImage 或带安装向导的安装器。v0.2.6 发布包名称与主要内容为：
 
 | 平台 | 压缩包 | 解压后的主要文件 |
 | --- | --- | --- |
-| Linux x86_64 | `locm-0.2.5-linux-x86_64.tar.gz` | `linux-x86_64/local-engine-manager`、`LICENSE`、`README.txt` |
-| Windows x64 GNU | `locm-0.2.5-windows-x64-gnu-test.zip` | `windows-x64-gnu/local-engine-manager.exe`、`WebView2Loader.dll`、`LICENSE`、`README.txt` |
+| Linux x86_64 | `locm-0.2.6-linux-x86_64.tar.gz` | `linux-x86_64/local-engine-manager`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
+| Windows x64 GNU | `locm-0.2.6-windows-x64-gnu-test.zip` | `windows-x64-gnu/local-engine-manager.exe`、`WebView2Loader.dll`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
 
-这些名称对应仓库本地 `target/delivery/locm-v0.2.5/` 的实际构建产物；该目录是本地交付目录，不是 Git 跟踪的 `dist/` 发布文件。若从[项目 v0.2.5 发布页](https://github.com/sincalaway/locm/releases/tag/v0.2.5)下载，请以发布附件实际显示的文件名为准。Windows ZIP 名称中的 `test` 是有意保留的：该版本尚未在真实 Windows 设备启动验证。
+这些名称对应仓库本地 `target/delivery/locm-v0.2.6/` 的构建产物；该目录是本地交付目录，不是 Git 跟踪的 `dist/` 发布文件。也可从[项目 v0.2.6 发布页](https://github.com/sincalaway/locm/releases/tag/v0.2.6)下载。Windows ZIP 名称中的 `test` 是有意保留的：该版本尚未在真实 Windows 设备启动验证。
 
 ## Windows x64
 
@@ -42,7 +42,7 @@ sudo pacman -S --needed gtk3 webkit2gtk-4.1
 解压并从图形桌面会话启动：
 
 ```sh
-tar -xzf locm-0.2.5-linux-x86_64.tar.gz
+tar -xzf locm-0.2.6-linux-x86_64.tar.gz
 cd linux-x86_64
 ./local-engine-manager
 ```

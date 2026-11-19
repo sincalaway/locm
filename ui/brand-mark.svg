@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="LocM 本地工作区标记">
+  <path d="M128 384V144h256v64H192v112h112v-80h64v144H128Z" fill="#C95F3F"/>
+  <circle cx="256" cy="256" r="34" fill="#202A26"/>
+  <circle cx="256" cy="256" r="13" fill="#F6F1E8"/>
+</svg>

@@ -1,5 +1,6 @@
 (() => {
   const invoke = window.__TAURI__?.core?.invoke;
+  const Execution = window.LocmAgentExecution;
   const TASKS_KEY = "locm-agent-tasks-v1";
   const WORKSPACE_KEY = "locm-agent-workspace-v1";
   const CURRENT_TASK_KEY = "locm-agent-current-task-v1";
@@ -70,24 +71,26 @@
               ? pending
               : null;
         if (!task.pendingAction && task.status === "awaiting_approval") task.status = "paused";
-        if (task.status === "executing_approved") {
-          task.status = "paused";
-          task.pendingAction = null;
-          task.entries.push({ kind: "status", text: "应用关闭前已批准的操作可能已部分或全部执行；结果未知，Agent 不会自动重试。请先检查工作区和相关进程。", at: Date.now() });
-        } else if (task.status === "running") {
-          task.status = "paused";
-          task.entries.push({ kind: "status", text: "应用重新打开；上次任务已暂停。你可以继续发消息，未完成的工具操作不会自动重试。", at: Date.now() });
-        }
+        const recovery = Execution.recoverLoadedTask(task, Date.now());
+        if (recovery.notice) task.entries.push({ kind: "status", text: recovery.notice, at: Date.now() });
+        task.entries = task.entries.slice(-120);
         return task;
       });
     } catch { return []; }
   }
   function persist() {
     state.tasks = state.tasks.slice(0, MAX_TASKS);
-    let snapshot = state.tasks.map((task) => ({
+    const orderedTasks = [...state.tasks];
+    const currentIndex = orderedTasks.findIndex((task) => task.id === state.currentTaskId);
+    if (currentIndex > 0) orderedTasks.unshift(orderedTasks.splice(currentIndex, 1)[0]);
+    let snapshot = orderedTasks.map((task) => ({
       ...task,
       turns: (task.turns || []).slice(-MAX_TURNS).map((message) => ({ ...message, content: truncate(message.content, 12000) })),
       entries: (task.entries || []).slice(-120).map((entry) => ({ ...entry, text: truncate(entry.text, 6000) })),
+      execution: {
+        ...Execution.normalizeExecution(task.execution),
+        steps: Execution.normalizeExecution(task.execution).steps.slice(-24).map((step) => ({ ...step, result: truncate(step.result, 1800) })),
+      },
     }));
     let serialized = JSON.stringify(snapshot);
     while (bytes(serialized).length > MAX_TASK_STORAGE_BYTES && snapshot.length > 1) {
@@ -97,11 +100,14 @@
     if (bytes(serialized).length > MAX_TASK_STORAGE_BYTES && snapshot.length) {
       snapshot[0].turns = snapshot[0].turns.slice(-12);
       snapshot[0].entries = snapshot[0].entries.slice(-20);
+      snapshot[0].execution.steps = snapshot[0].execution.steps.slice(-12).map((step) => ({ ...step, result: truncate(step.result, 1000) }));
       serialized = JSON.stringify(snapshot);
     }
-    try { localStorage.setItem(TASKS_KEY, serialized); } catch { notify("Agent 任务记录无法保存到本机浏览器存储。", true); }
+    let tasksSaved = false;
+    try { localStorage.setItem(TASKS_KEY, serialized); tasksSaved = true; } catch { notify("Agent 任务记录无法保存到本机浏览器存储。", true); }
     try { localStorage.setItem(WORKSPACE_KEY, state.workspace); } catch { /* The selected directory remains available for this session. */ }
     try { localStorage.setItem(CURRENT_TASK_KEY, state.currentTaskId || ""); } catch { /* The current task remains available for this session. */ }
+    return tasksSaved;
   }
   function notify(message, error = false) {
     const toast = document.getElementById("toast");
@@ -114,6 +120,11 @@
   }
   function statusLabel(status) {
     return ({ running: "执行中", executing_approved: "执行已批准操作", awaiting_approval: "等待确认", completed: "已完成", paused: "已暂停", failed: "失败" })[status] || "新任务";
+  }
+  function taskStatusLabel(task) {
+    if (task.execution?.recovery?.mode === "plan_only") return "中断 · 待继续生成计划";
+    if (task.execution?.recovery?.mode === "awaiting_user_instruction") return "恢复计划已生成 · 待指示";
+    return statusLabel(task.status);
   }
   function currentWorkspace() {
     return activeTask()?.workspace || state.workspace;
@@ -163,7 +174,7 @@
       const title = document.createElement("strong");
       title.textContent = task.title || "新任务";
       const sub = document.createElement("small");
-      sub.textContent = `${statusLabel(task.status)} · ${new Date(task.updatedAt || task.createdAt).toLocaleDateString()}`;
+      sub.textContent = `${taskStatusLabel(task)} · ${new Date(task.updatedAt || task.createdAt).toLocaleDateString()}`;
       sub.className = "agent-task-status";
       sub.dataset.status = task.status || "";
       open.append(title, sub);
@@ -209,6 +220,7 @@
       card.append(label, content);
       transcript.append(card);
     });
+    renderExecutionPanel(task, transcript);
     if (state.busy && state.activeTaskId === task.id) {
       const line = document.createElement("div");
       line.className = "agent-status-line running";
@@ -227,6 +239,72 @@
     }
     if (task.pendingAction) renderApproval(task, approval);
     transcript.scrollTop = transcript.scrollHeight;
+  }
+
+  function renderExecutionPanel(task, transcript) {
+    const execution = task.execution || Execution.emptyExecution();
+    if (!task.plan?.length && !execution.steps.length && !execution.recovery) return;
+    const panel = document.createElement("section");
+    panel.className = "agent-execution-log";
+    const heading = document.createElement("h3");
+    heading.textContent = "计划与执行记录";
+    panel.append(heading);
+    const explanation = document.createElement("p");
+    explanation.className = "agent-execution-note";
+    explanation.textContent = "上方是模型计划；下方按时间记录实际模型请求和工具结果。待确认项尚未执行。";
+    panel.append(explanation);
+    if (task.plan?.length) {
+      const plan = document.createElement("ol");
+      plan.className = "agent-plan-list";
+      task.plan.forEach((text) => {
+        const item = document.createElement("li");
+        item.textContent = text;
+        plan.append(item);
+      });
+      panel.append(plan);
+    }
+    if (execution.steps.length) {
+      const list = document.createElement("ol");
+      list.className = "agent-execution-steps";
+      execution.steps.forEach((step) => {
+        const item = document.createElement("li");
+        item.className = `agent-execution-step ${step.status}`;
+        const title = document.createElement("strong");
+        title.textContent = `${step.kind === "model" ? "模型" : step.kind === "tool" ? "工具" : "恢复点"} · ${step.label}`;
+        const status = document.createElement("span");
+        status.className = "agent-execution-status";
+        status.textContent = ({ pending: "待执行 · 等待确认", running: "执行中", completed: "已完成", failed: "失败", interrupted: "中断" })[step.status] || step.status;
+        item.append(title, status);
+        if (step.result) {
+          const result = document.createElement("pre");
+          result.textContent = step.result;
+          item.append(result);
+        }
+        list.append(item);
+      });
+      panel.append(list);
+    }
+    if (execution.recovery) {
+      const note = document.createElement("p");
+      note.className = "agent-recovery-note";
+      note.textContent = execution.recovery.reason;
+      panel.append(note);
+      if (execution.recovery.mode === "plan_only") {
+        const resume = document.createElement("button");
+        resume.type = "button";
+        resume.className = "button primary agent-recovery-button";
+        resume.textContent = "从中断处继续生成计划（不重跑工具）";
+        resume.disabled = state.busy || !state.runtime.running || !task.workspace;
+        resume.addEventListener("click", () => recoverInterruptedTask(task));
+        panel.append(resume);
+      } else {
+        const hint = document.createElement("p");
+        hint.className = "agent-recovery-hint";
+        hint.textContent = "恢复只生成了计划，没有执行工具。检查工作区和相关进程后，可在下方发出新的明确指示。";
+        panel.append(hint);
+      }
+    }
+    transcript.append(panel);
   }
 
   function renderApproval(task, container) {
@@ -284,6 +362,7 @@
     const task = activeTask();
     const busy = state.busy;
     const pending = Boolean(task?.pendingAction);
+    const recoveryLocked = task?.execution?.recovery?.mode === "plan_only";
     const input = $("#agent-input");
     const button = $("#agent-send");
     input.placeholder = !state.runtime.running
@@ -291,9 +370,9 @@
       : !currentWorkspace()
         ? "先选择工作文件夹，再描述你想完成的任务"
         : "描述你想完成的任务…（Enter 发送，Shift+Enter 换行）";
-    input.disabled = busy || pending;
-    button.disabled = busy || pending || !state.runtime.running || !currentWorkspace() || !input.value.trim() && !state.attachments.length;
-    $("#agent-attach").disabled = busy || pending;
+    input.disabled = busy || pending || recoveryLocked;
+    button.disabled = busy || pending || recoveryLocked || !state.runtime.running || !currentWorkspace() || !input.value.trim() && !state.attachments.length;
+    $("#agent-attach").disabled = busy || pending || recoveryLocked;
     $("#agent-choose-workspace").disabled = busy;
   }
 
@@ -306,9 +385,6 @@
     const content = truncate(String(message || ""));
     task.turns.push({ role: "user", content: `工作区工具结果：\n${content}` });
     addEntry(task, "tool", content);
-  }
-  function safeHistory(task) {
-    return task.turns.slice(-MAX_TURNS).map((message) => ({ role: message.role, content: truncate(message.content, 30000) }));
   }
   function parseAgentJson(text) {
     let candidate = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
@@ -396,6 +472,85 @@
     return false;
   }
 
+  async function requestModel(task, systemPrompt = SYSTEM_PROMPT) {
+    const step = Execution.beginStep(task, { kind: "model", label: "请求本地模型生成下一条回复" });
+    if (!persist()) {
+      Execution.updateStep(task, step.id, "failed", "步骤记录无法保存到本机；模型请求未启动。");
+      task.status = "failed";
+      throw new Error("本机任务记录保存失败，模型请求未启动");
+    }
+    render();
+    try {
+      const runtime = await invoke("runtime_status");
+      const contextPreference = runtime?.running ? runtime.context : "auto";
+      const budget = LocmAgentContext.contextBudget(contextPreference);
+      const raw = await invoke("chat_complete", {
+        messages: LocmAgentContext.buildMessages(systemPrompt, task.turns, budget.inputBytes),
+        temperature: 0.2,
+        maxTokens: budget.replyTokens,
+      });
+      Execution.updateStep(task, step.id, "completed", truncate(raw, 8000));
+      persist();
+      return raw;
+    } catch (error) {
+      Execution.updateStep(task, step.id, "failed", `模型请求失败：${error}`);
+      persist();
+      throw error;
+    }
+  }
+
+  function toolStepDetails(action) {
+    const sideEffect = ["write_file", "delete_file", "run_command"].includes(action.name);
+    const label = action.name === "run_command"
+      ? `运行命令 ${JSON.stringify([action.program, ...action.args])}`
+      : action.name === "write_file"
+        ? `写入文件 ${action.path}`
+        : action.name === "delete_file"
+          ? `删除文件 ${action.path}`
+          : action.name === "read_file"
+            ? `读取文件 ${action.path}`
+            : action.name === "search_files"
+              ? `搜索 ${JSON.stringify(action.query)}（${action.path || "."}）`
+              : `列出文件（${action.path || "."}）`;
+    return { kind: "tool", label, toolName: action.name, risk: sideEffect ? "side_effect" : "read_only" };
+  }
+
+  async function executeToolAction(task, action) {
+    if (Execution.toolsBlocked(task)) {
+      addToolResult(task, "恢复模式只允许生成计划；工具调用未执行。请先检查中断操作的实际结果，再发出新的明确指示。");
+      return "blocked";
+    }
+    const step = Execution.beginStep(task, toolStepDetails(action));
+    if (!persist()) {
+      Execution.updateStep(task, step.id, "failed", "步骤记录无法保存到本机；工具调用未启动。");
+      task.status = "failed";
+      notify("任务记录无法保存到本机；工具调用已阻止。", true);
+      return "failed";
+    }
+    render();
+    try {
+      const outcome = await performTool(task, action);
+      if (outcome === "pause") {
+        if (task.pendingAction) task.pendingAction.stepId = step.id;
+        Execution.updateStep(task, step.id, "pending", "等待用户确认；尚未执行此操作。");
+        persist();
+        render();
+        return "pause";
+      }
+      const lastToolEntry = [...task.entries].reverse().find((entry) => entry.kind === "tool");
+      Execution.updateStep(task, step.id, "completed", lastToolEntry?.text || "工具已完成；没有返回文本结果。");
+      persist();
+      return "continue";
+    } catch (error) {
+      const message = `工具失败：${error}`;
+      Execution.updateStep(task, step.id, "failed", `${message} 如果操作可能产生副作用，请检查后再决定是否重试。`);
+      task.status = "failed";
+      addToolResult(task, message);
+      addEntry(task, "status", "工具失败，本轮已停止且不会自动重试；请检查实际结果后再决定下一步。");
+      return "failed";
+    }
+  }
+
   async function performTool(task, action) {
     const workspace = task.workspace;
     if (action.name === "search_files") {
@@ -466,6 +621,10 @@
 
   async function runAgent(task) {
     if (state.busy || task.pendingAction) return;
+    if (Execution.toolsBlocked(task)) {
+      notify("该任务处于中断恢复状态；请使用恢复按钮只生成计划，或在计划生成后发出新的明确指示。", true);
+      return;
+    }
     if (!state.runtime.running) {
       notify("本地模型尚未启动。请先前往“运行”页面启动一个模型。", true);
       return;
@@ -487,8 +646,7 @@
           addEntry(task, "status", "已暂停；当前模型请求结束后没有再执行新的工具操作。你可以继续发送指示。 ");
           return;
         }
-        const messages = [{ role: "system", content: SYSTEM_PROMPT }, ...safeHistory(task)];
-        const raw = await invoke("chat_complete", { messages, temperature: 0.2 });
+        const raw = await requestModel(task);
         if (state.stopRequested) {
           task.status = "paused";
           addEntry(task, "status", "已暂停；当前模型回复已收到，未执行其中的工具请求。你可以继续发送指示。 ");
@@ -535,15 +693,8 @@
           return;
         }
         rememberModelAction(task, raw, parsed);
-        if (action.name === "delete_file" || action.name === "run_command" || action.name === "write_file") {
-          try {
-            const outcome = await performTool(task, action);
-            if (outcome === "pause") return;
-          } catch (error) { addToolResult(task, `工具失败：${error}`); }
-        } else {
-          try { await performTool(task, action); }
-          catch (error) { addToolResult(task, `工具失败：${error}`); }
-        }
+        const outcome = await executeToolAction(task, action);
+        if (["pause", "failed", "blocked"].includes(outcome)) return;
         render();
       }
       task.status = "paused";
@@ -561,13 +712,34 @@
   }
 
   async function approvePending(task) {
-    if (state.busy || !task.pendingAction) return;
+    if (state.busy || !task.pendingAction || Execution.toolsBlocked(task)) return;
     const action = task.pendingAction;
+    const stepId = action.stepId;
     state.busy = true;
     state.activeTaskId = task.id;
     task.pendingAction = null;
     task.status = "executing_approved";
-    persist();
+    const approvalStep = stepId
+      ? Execution.updateStep(task, stepId, "running", "用户点击批准；正在等待系统原生确认。")
+      : null;
+    const trackedStep = approvalStep || Execution.beginStep(task, {
+      kind: "tool",
+      label: action.kind === "command" ? `运行命令 ${JSON.stringify([action.program, ...(action.args || [])])}` : action.kind === "delete" ? `删除文件 ${action.path}` : `覆盖文件 ${action.path}`,
+      toolName: action.kind === "command" ? "run_command" : action.kind === "delete" ? "delete_file" : "write_file",
+      risk: "side_effect",
+    });
+    action.stepId = trackedStep.id;
+    if (!persist()) {
+      Execution.updateStep(task, trackedStep.id, "pending", "执行记录未能保存；操作尚未提交，请重新查看并确认。");
+      task.pendingAction = action;
+      task.status = "awaiting_approval";
+      state.busy = false;
+      state.activeTaskId = null;
+      persist();
+      render();
+      notify("执行记录无法保存；操作尚未启动，请稍后重试确认。", true);
+      return;
+    }
     render();
     try {
       let resultText;
@@ -580,15 +752,24 @@
         });
         if (result.cancelled) {
           task.status = "paused";
+          Execution.updateStep(task, trackedStep.id, "completed", `系统确认已取消；文件未写入：${action.path}`);
           addToolResult(task, `你取消了系统确认；文件未写入：${action.path}。不要重试，除非用户之后再次明确要求。`);
           addEntry(task, "status", "系统确认已取消，文件没有被覆盖；任务已暂停。你可以继续发送指示。");
           return;
         }
         resultText = result.written ? `用户已批准覆盖，文件已写入：${action.path}` : `文件未写入：${action.path}`;
+        if (!result.written) {
+          task.status = "failed";
+          Execution.updateStep(task, trackedStep.id, "failed", `${resultText} 不会自动重试；请检查实际文件状态。`);
+          addToolResult(task, resultText);
+          addEntry(task, "status", "覆盖未完成，本轮已停止且不会自动重试。");
+          return;
+        }
       } else if (action.kind === "delete") {
         const deleted = await invoke("agent_delete_file", { workspace: task.workspace, relativePath: action.path });
         if (!deleted) {
           task.status = "paused";
+          Execution.updateStep(task, trackedStep.id, "completed", `系统确认已取消；文件未删除：${action.path}`);
           addToolResult(task, `你取消了系统确认；文件未删除：${action.path}。不要重试，除非用户之后再次明确要求。`);
           addEntry(task, "status", "系统确认已取消，文件没有被删除；任务已暂停。你可以继续发送指示。");
           return;
@@ -602,20 +783,36 @@
         });
         if (result.cancelled) {
           task.status = "paused";
+          Execution.updateStep(task, trackedStep.id, "completed", "系统确认已取消；命令没有启动。");
           addToolResult(task, `你取消了系统确认；命令没有运行：${JSON.stringify([action.program, ...action.args])}。不要重试，除非用户之后再次明确要求。`);
           addEntry(task, "status", "系统确认已取消，命令没有启动；任务已暂停。你可以继续发送指示。");
           return;
         }
         resultText = `用户已批准运行命令 ${JSON.stringify([action.program, ...action.args])}。退出码：${result.exitCode ?? "未知"}；成功：${result.success}；超时：${result.timedOut ? "是" : "否"}\nstdout:\n${result.stdout || "（空）"}\nstderr:\n${result.stderr || "（空）"}`;
+        if (!result.success) {
+          task.status = "failed";
+          Execution.updateStep(task, trackedStep.id, "failed", `${resultText}\n命令未报告成功；可能仍有部分副作用，不会自动重试。`);
+          addToolResult(task, resultText);
+          addEntry(task, "status", "命令未报告成功，本轮已停止且不会自动重试；请检查相关进程和文件。");
+          return;
+        }
       }
       task.status = "running";
+      Execution.updateStep(task, trackedStep.id, "completed", resultText);
       addToolResult(task, resultText);
       await continueAfterApproval(task);
     } catch (error) {
       task.pendingAction = null;
       task.status = "failed";
-      addEntry(task, "status", `已批准操作执行失败：${error}`);
-      notify(`批准的操作失败：${error}`, true);
+      const currentStep = task.execution.steps.find((step) => step.id === trackedStep.id);
+      if (currentStep?.status === "running") {
+        Execution.updateStep(task, trackedStep.id, "failed", `已批准操作调用失败：${error}；是否产生部分副作用未知，请检查。不会自动重试。`);
+        addToolResult(task, `已批准操作执行失败：${error}。操作是否部分完成未知，请检查后再决定是否重试。`);
+        addEntry(task, "status", `已批准操作失败；不会自动重试：${error}`);
+      } else {
+        addEntry(task, "status", `已批准操作结果已记录；后续 Agent 处理失败且没有重试该操作：${error}`);
+      }
+      notify(currentStep?.status === "running" ? `批准的操作失败：${error}` : `操作结果已记录，但后续 Agent 处理失败：${error}`, true);
     } finally {
       state.busy = false;
       state.activeTaskId = null;
@@ -625,6 +822,11 @@
   }
 
   async function continueAfterApproval(task) {
+    if (Execution.toolsBlocked(task)) {
+      task.status = "paused";
+      addEntry(task, "status", "当前处于中断恢复模式；已停止后续工具操作，请先检查实际结果。");
+      return;
+    }
     task.status = "running";
     for (let step = 0; step < 12; step++) {
       if (state.stopRequested) {
@@ -632,10 +834,7 @@
         addEntry(task, "status", "操作已完成，后续步骤已暂停。你可以继续发送指示。");
         return;
       }
-      const raw = await invoke("chat_complete", {
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...safeHistory(task)],
-        temperature: 0.2,
-      });
+      const raw = await requestModel(task);
       if (state.stopRequested) {
         task.status = "paused";
         addEntry(task, "status", "模型回复已收到，未执行新的工具操作。你可以继续发送指示。");
@@ -678,15 +877,8 @@
         return;
       }
       rememberModelAction(task, raw, parsed);
-      if (action.name === "delete_file" || action.name === "run_command" || action.name === "write_file") {
-        try {
-          const outcome = await performTool(task, action);
-          if (outcome === "pause") return;
-        } catch (error) { addToolResult(task, `工具失败：${error}`); }
-      } else {
-        try { await performTool(task, action); }
-        catch (error) { addToolResult(task, `工具失败：${error}`); }
-      }
+      const outcome = await executeToolAction(task, action);
+      if (["pause", "failed", "blocked"].includes(outcome)) return;
     }
     task.status = "paused";
     addEntry(task, "status", "本轮已达到 12 个模型/工具步骤上限。你可以检查当前成果并继续指示。 ");
@@ -700,9 +892,66 @@
     const description = action.kind === "command"
       ? `命令 ${JSON.stringify([action.program, ...(action.args || [])])}`
       : action.kind === "delete" ? `删除 ${action.path}` : `覆盖 ${action.path}`;
+    if (action.stepId) Execution.updateStep(task, action.stepId, "completed", `用户拒绝了该操作；未执行：${description}`);
     addToolResult(task, `用户拒绝了操作：${description}。不要重试该操作；若需要，先向用户说明并询问替代方案。`);
     addEntry(task, "status", "已拒绝该操作；Agent 不会继续执行。可在输入框中补充新的指示。");
     render();
+  }
+
+  async function recoverInterruptedTask(task) {
+    if (state.busy || task.execution?.recovery?.mode !== "plan_only") return;
+    if (!state.runtime.running) { notify("请先启动本地模型，再继续生成恢复计划。", true); return; }
+    if (!task.workspace) { notify("此任务没有可用的工作文件夹；请先检查任务记录。", true); return; }
+    state.busy = true;
+    state.activeTaskId = task.id;
+    state.stopRequested = false;
+    task.status = "running";
+    persist();
+    render();
+    try {
+      const recoveryPrompt = `${SYSTEM_PROMPT}\n\n【中断恢复约束】这是用户明确点击的恢复请求。只依据已有对话上下文生成或更新计划，不执行、重放或建议直接调用任何工具；上次中断工具可能已部分或全部完成，结果未知。无论回复是工具请求还是完成声明，应用都不会执行工具或把任务标记为完成。`;
+      const raw = await requestModel(task, recoveryPrompt);
+      const parsed = parseAgentJson(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.type === "plan") {
+        const validSteps = Array.isArray(parsed.steps)
+          && parsed.steps.length >= 1
+          && parsed.steps.length <= 12
+          && parsed.steps.every((step) => typeof step === "string" && step.trim() && bytes(step.trim()).length <= 500);
+        if (!validSteps) {
+          task.turns.push({ role: "assistant", content: truncate(raw, 26000) });
+          addToolResult(task, "恢复模型返回的计划格式无效；工具操作尚未执行。请重新生成计划，或检查工作区后发出新指示。");
+          Execution.setRecoveryMode(task, "plan_only", "恢复计划格式无效；没有执行工具。可再次点击按钮，仅用已有上下文重新生成计划。");
+          task.status = "paused";
+          addEntry(task, "status", "恢复计划格式无效；未执行任何工具。可以再次点击恢复按钮重试模型计划。");
+          return;
+        }
+        processPlanResponse(task, raw, parsed);
+      } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.type === "tool_call") {
+        rememberModelAction(task, raw, parsed);
+        addToolResult(task, "恢复模式只生成计划；模型提出的工具请求没有执行。上次中断工具结果仍未知，请先检查工作区或相关进程，不要自动重跑。");
+      } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.type === "message") {
+        rememberModelAction(task, raw, parsed);
+        addEntry(task, "assistant", String(parsed.message || "模型没有生成计划。"));
+      } else {
+        task.turns.push({ role: "assistant", content: truncate(raw, 26000) });
+        const message = parsed?.type === "done"
+          ? `模型返回了完成声明，但中断操作结果未知，因此任务没有被标记为完成。\n\n${truncate(String(parsed.message || ""), 6000)}`
+          : `恢复请求没有返回有效计划；没有执行任何工具。\n\n${truncate(raw, 8000)}`;
+        addEntry(task, "assistant", message);
+      }
+      Execution.setRecoveryMode(task, "awaiting_user_instruction", "恢复仅使用已有上下文生成了模型回复，没有执行任何工具。请检查中断操作的实际结果，再发出新的明确指示。");
+      task.status = "paused";
+      addEntry(task, "status", "恢复阶段只生成了计划/回复；所有工具调用均未执行。检查工作区和相关进程后，可在下方发出新的明确指示。");
+    } catch (error) {
+      task.status = "paused";
+      addEntry(task, "status", `恢复计划生成失败；没有执行工具。你可以再次点击恢复按钮重试模型请求：${error}`);
+      notify(`恢复计划生成失败：${error}`, true);
+    } finally {
+      state.busy = false;
+      state.activeTaskId = null;
+      persist();
+      render();
+    }
   }
 
   function createTask(prompt, userText) {
@@ -718,6 +967,7 @@
       turns: [{ role: "user", content: userText }],
       entries: [{ kind: "user", text: prompt || "请阅读我附加的文件并完成任务。", at: Date.now() }],
       pendingAction: null,
+      execution: Execution.emptyExecution(),
     };
     state.tasks.unshift(task);
     state.tasks = state.tasks.slice(0, MAX_TASKS);
@@ -734,6 +984,10 @@
     if (state.busy) return;
     let task = activeTask();
     if (task?.pendingAction) { notify("请先批准或拒绝当前待确认操作。", true); return; }
+    if (task?.execution?.recovery?.mode === "plan_only") {
+      notify("请先点击“从中断处继续生成计划（不重跑工具）”。", true);
+      return;
+    }
     const attachmentContent = state.attachments.map((item) => `\n\n[用户附件：${item.name}]\n${item.text}`).join("");
     const userText = `${prompt || "请阅读我附加的文件并完成任务。"}${attachmentContent}`;
     if (bytes(userText).length > 30000) { notify("任务说明和附件文本总量不能超过 30 KB。", true); return; }
@@ -742,6 +996,10 @@
       if (task.workspace !== state.workspace) {
         notify("当前任务绑定了另一个工作文件夹。请点“新任务”后再使用新选定的文件夹。", true);
         return;
+      }
+      if (task.execution?.recovery?.mode === "awaiting_user_instruction") {
+        Execution.clearRecovery(task);
+        addEntry(task, "status", "收到新的明确指示；已退出只生成计划的恢复模式。中断步骤仍保留在历史记录中。 ");
       }
       task.turns.push({ role: "user", content: userText });
       task.needsPlan = true;
@@ -825,6 +1083,20 @@
     $("#agent-input").focus();
   }
 
+  function markCurrentTaskInterrupted() {
+    if (!state.busy || !state.activeTaskId) return;
+    const task = state.tasks.find((item) => item.id === state.activeTaskId);
+    const step = Execution.interruptTask(task, Date.now());
+    if (!step) return;
+    const warning = step.kind === "tool" && step.risk === "side_effect"
+      ? "应用正在关闭；当前工具操作已标为中断，结果可能未知或部分完成，不会自动重放。请检查工作区及相关进程。"
+      : "应用正在关闭；当前步骤已标为中断。恢复时只生成计划，不会自动执行工具。";
+    task.entries.push({ kind: "status", text: warning, at: Date.now() });
+    task.entries = task.entries.slice(-120);
+    task.updatedAt = Date.now();
+    persist();
+  }
+
   function wireEvents() {
     $("#agent-form").addEventListener("submit", submitTask);
     $("#agent-input").addEventListener("input", updateComposerState);
@@ -851,6 +1123,8 @@
     window.addEventListener("hashchange", () => {
       if (location.hash === "#agent") refreshRuntime();
     });
+    window.addEventListener("beforeunload", markCurrentTaskInterrupted);
+    window.addEventListener("pagehide", markCurrentTaskInterrupted);
   }
 
   function start() {
@@ -862,6 +1136,7 @@
     }
     if (!state.tasks.some((task) => task.id === state.currentTaskId)) state.currentTaskId = null;
     wireEvents();
+    persist();
     render();
     refreshRuntime();
     setInterval(() => { if (location.hash === "#agent") refreshRuntime(); }, 3000);

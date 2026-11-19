@@ -284,7 +284,16 @@
       : "正在检查已安装 llama-server 的参数…";
     $("#run-capability-summary").textContent = summary;
     const contextSupported = Boolean(capabilities?.ctxSize);
-    $$('input[name="run-context"]').forEach((input) => { input.disabled = input.value !== "auto" && !contextSupported; });
+    const contextLocked = Boolean(state.runtime.running);
+    $$('input[name="run-context"]').forEach((input) => {
+      input.disabled = contextLocked || input.value !== "auto" && !contextSupported;
+    });
+    const selectedContext = state.runPreferences.context === "auto"
+      ? "自动"
+      : `${Number(state.runPreferences.context) / 1024}K`;
+    $("#context-budget-note").textContent = contextLocked
+      ? `模型运行中已锁定本次启动的${selectedContext}上下文；停止后可调整。Agent 按该选择保守裁剪 UTF-8 字节（不是 token 数），并为模型回复预留额度。`
+      : `上下文越长，内存占用越高。“自动”不强制设置 --ctx-size。Agent 按选择保守裁剪 UTF-8 字节（不是 token 数）并为模型回复预留额度；自动模式按 8K 保守预算。`;
     $("#flash-attention").disabled = !capabilities?.flashAttention;
     $("#flash-capability-note").textContent = capabilities?.flashAttention
       ? "启动时按所选值传入当前版本支持的 --flash-attn"

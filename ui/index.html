@@ -9,6 +9,8 @@
   <link rel="stylesheet" href="./agent.css" />
   <link rel="stylesheet" href="./workbench-theme.css" />
   <script src="./app.js" defer></script>
+  <script src="./agent_execution.js" defer></script>
+  <script src="./agent_context.js" defer></script>
   <script src="./agent.js" defer></script>
 </head>
 <body data-page="overview">
@@ -130,7 +132,7 @@
               <label><input type="radio" name="run-context" value="16384" /><span>16K</span></label>
               <label><input type="radio" name="run-context" value="32768" /><span>32K</span></label>
               <label><input type="radio" name="run-context" value="65536" /><span>64K</span></label>
-            </div><small>上下文越长，内存占用越高。“自动”不强制设置 --ctx-size，使用当前服务器和模型默认值。</small></fieldset>
+            </div><small id="context-budget-note">上下文越长，内存占用越高。“自动”不强制设置 --ctx-size。Agent 按选择保守裁剪 UTF-8 字节（不是 token 数）并为模型回复预留额度；自动模式按 8K 保守预算。</small></fieldset>
             <div class="option-row disabled-option"><div><strong>思考模式</strong><small id="thinking-mode-note">不可强制切换：由模型模板/服务器默认值决定；当前无法可靠识别模型是否支持。</small></div><label class="switch" title="未可靠识别模型能力前不可用"><input type="checkbox" id="thinking-mode" disabled /><span></span></label></div>
             <div class="option-row"><div><strong>Flash Attention</strong><small id="flash-capability-note">自动遵循服务器默认值</small></div><select id="flash-attention" aria-label="Flash Attention 设置"><option value="auto">自动</option><option value="on">开启</option><option value="off">关闭</option></select></div>
             <div class="option-row"><div><strong>KV 缓存 Q8</strong><small id="kv-capability-note">降低缓存内存占用；可能影响速度</small></div><label class="switch"><input type="checkbox" id="kv-cache-q8" /><span></span></label></div>

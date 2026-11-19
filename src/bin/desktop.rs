@@ -85,6 +85,7 @@ struct MediaGenerationState {
 struct RuntimeInfo {
     running: bool,
     model_name: Option<String>,
+    context: String,
     port: u16,
     bind_host: String,
     last_error: Option<String>,
@@ -139,6 +140,7 @@ fn schedule_auto_restart(spec: &mut RestartSpec) -> Option<u64> {
 struct RuntimeData {
     child: Option<Child>,
     model_name: Option<String>,
+    context: String,
     bind_host: String,
     restart: Option<RestartSpec>,
     last_error: Option<String>,
@@ -154,6 +156,7 @@ impl Default for RuntimeState {
             inner: Mutex::new(RuntimeData {
                 child: None,
                 model_name: None,
+                context: "auto".to_string(),
                 bind_host: "127.0.0.1".to_string(),
                 restart: None,
                 last_error: None,
@@ -633,6 +636,7 @@ fn remove_model(
         }
         data.child.take();
         data.model_name = None;
+        data.context = "auto".to_string();
         data.restart = None;
         data.last_error = None;
     }
@@ -1182,6 +1186,7 @@ fn runtime_status_for(state: &RuntimeState, port: u16) -> Result<RuntimeInfo, St
     Ok(RuntimeInfo {
         running: data.child.is_some(),
         model_name: data.model_name.clone(),
+        context: data.context.clone(),
         port,
         bind_host: data.bind_host.clone(),
         last_error: data.last_error.clone(),
@@ -1212,6 +1217,7 @@ async fn start_local_model(
                     return Ok(RuntimeInfo {
                         running: true,
                         model_name: data.model_name.clone(),
+                        context: data.context.clone(),
                         port: settings.api_port,
                         bind_host: data.bind_host.clone(),
                         last_error: data.last_error.clone(),
@@ -1221,6 +1227,7 @@ async fn start_local_model(
                 Ok(Some(_)) => {
                     data.child.take();
                     data.model_name = None;
+                    data.context = "auto".to_string();
                 }
                 Err(error) => return Err(format!("检查现有推理服务失败：{error}")),
             }
@@ -1248,6 +1255,7 @@ async fn start_local_model(
         let process = spawn_server_ready(&executable, &args, &bind_host, settings.api_port)?;
         data.child = Some(process);
         data.model_name = Some(model_name.clone());
+        data.context = options.context.clone();
         data.bind_host = bind_host.clone();
         data.last_error = None;
         data.restart = Some(RestartSpec {
@@ -1263,6 +1271,7 @@ async fn start_local_model(
         Ok(RuntimeInfo {
             running: true,
             model_name: Some(model_name),
+            context: data.context.clone(),
             port: settings.api_port,
             bind_host,
             last_error: None,
@@ -1350,11 +1359,13 @@ async fn stop_local_model(app: AppHandle) -> Result<RuntimeInfo, String> {
             let _ = process.wait();
         }
         data.model_name = None;
+        data.context = "auto".to_string();
         data.bind_host = "127.0.0.1".to_string();
         data.last_error = None;
         Ok(RuntimeInfo {
             running: false,
             model_name: None,
+            context: data.context.clone(),
             port: settings.api_port,
             bind_host: data.bind_host.clone(),
             last_error: None,
@@ -1369,8 +1380,12 @@ async fn chat_complete(
     app: AppHandle,
     messages: Vec<ChatMessage>,
     temperature: f32,
+    max_tokens: u32,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if !(1..=4096).contains(&max_tokens) {
+            return Err("模型回复上限无效；必须在 1 至 4096 之间".to_string());
+        }
         if messages.is_empty() || messages.len() > 60 {
             return Err("对话消息数量无效".to_string());
         }
@@ -1395,6 +1410,7 @@ async fn chat_complete(
                 "model": "local-model",
                 "messages": messages,
                 "temperature": temperature.clamp(0.0, 2.0),
+                "max_tokens": max_tokens,
                 "stream": false
             }))
             .send()

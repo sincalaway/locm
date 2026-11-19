@@ -1,17 +1,17 @@
 # 部署与运行手册
 
-本文说明 v0.2.7 桌面版的系统依赖、便携包启动、首次配置和常见故障。应用基于 Tauri 2：窗口由操作系统提供的 WebView 绘制界面，因此它和应用本身是两回事。Windows 使用 Microsoft Edge WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。缺少相应运行库时，程序可能无法打开窗口。
+本文说明 v0.2.8 桌面版的系统依赖、便携包启动、首次配置和常见故障。应用基于 Tauri 2：窗口由操作系统提供的 WebView 绘制界面，因此它和应用本身是两回事。Windows 使用 Microsoft Edge WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。缺少相应运行库时，程序可能无法打开窗口。
 
 ## 获取的包是什么
 
-当前 Tauri 配置关闭了安装包生成（`bundle.active: false`）。本项目提供的是压缩包中的便携测试程序，不是 MSI、`.deb`、AppImage 或带安装向导的安装器。v0.2.7 发布包名称与主要内容为：
+当前 Tauri 配置关闭了安装包生成（`bundle.active: false`）。本项目提供的是压缩包中的便携测试程序，不是 MSI、`.deb`、AppImage 或带安装向导的安装器。v0.2.8 发布包名称与主要内容为：
 
 | 平台 | 压缩包 | 解压后的主要文件 |
 | --- | --- | --- |
-| Linux x86_64 | `locm-0.2.7-linux-x86_64.tar.gz` | `linux-x86_64/local-engine-manager`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
-| Windows x64 GNU | `locm-0.2.7-windows-x64-gnu-test.zip` | `windows-x64-gnu/local-engine-manager.exe`、`WebView2Loader.dll`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
+| Linux x86_64 | `locm-0.2.8-linux-x86_64.tar.gz` | `linux-x86_64/local-engine-manager`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
+| Windows x64 GNU | `locm-0.2.8-windows-x64-gnu-test.zip` | `windows-x64-gnu/local-engine-manager.exe`、`WebView2Loader.dll`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
 
-这些名称对应仓库本地 `target/delivery/locm-v0.2.7/` 的构建产物；该目录是本地交付目录，不是 Git 跟踪的 `dist/` 发布文件。也可从[项目 v0.2.7 发布页](https://github.com/sincalaway/locm/releases/tag/v0.2.7)下载。Windows ZIP 名称中的 `test` 是有意保留的：该版本尚未在真实 Windows 设备启动验证。
+这些名称对应仓库本地 `target/delivery/locm-v0.2.8/` 的构建产物；该目录是本地交付目录，不是 Git 跟踪的 `dist/` 发布文件。也可从[项目 v0.2.8 发布页](https://github.com/sincalaway/locm/releases/tag/v0.2.8)下载。Windows ZIP 名称中的 `test` 是有意保留的：该版本尚未在真实 Windows 设备启动验证。
 
 ## Windows x64
 
@@ -42,7 +42,7 @@ sudo pacman -S --needed gtk3 webkit2gtk-4.1
 解压并从图形桌面会话启动：
 
 ```sh
-tar -xzf locm-0.2.7-linux-x86_64.tar.gz
+tar -xzf locm-0.2.8-linux-x86_64.tar.gz
 cd linux-x86_64
 ./local-engine-manager
 ```
@@ -72,7 +72,7 @@ cd linux-x86_64
 
 ## 验证范围与限制
 
-v0.2.7 验证通过 23 项默认 Rust 测试、70 项桌面 Rust 测试、18 项 JavaScript 回归测试和 Rust 格式检查，并分别构建 Linux x86_64 桌面程序与 Windows x64 GNU GUI EXE。Linux 包为 Linux 原生构建；Windows 包从 Linux 使用 `x86_64-pc-windows-gnu` 目标交叉构建，并包含与 EXE 同目录所需的 WebView2 Loader。Windows 包**没有在真实 Windows 设备启动验证**，不能将交叉构建称为 Windows 实机测试或据此承诺 Windows 兼容性。项目当前也没有生成 MSI/`.deb` 等安装包。
+v0.2.8 验证通过 Rust 格式检查、23 项默认 Rust 测试、70 项桌面 Rust 测试和 18 项 JavaScript 回归测试，并分别构建 Linux x86_64 桌面程序与 Windows x64 GNU GUI EXE。Linux 包为 Linux 原生构建；Windows 包从 Linux 使用 `x86_64-pc-windows-gnu` 目标交叉构建，并包含与 EXE 同目录所需的 WebView2 Loader。Windows 包**没有在真实 Windows 设备启动验证**，不能将交叉构建称为 Windows 实机测试或据此承诺 Windows 兼容性。项目当前也没有生成 MSI/`.deb` 等安装包。
 
 Rust 的 Windows `raw-dylib` 链接会将 `kernel32.dll` 解析为 `-lKernel32`；Linux MinGW 的标准导入库名称为小写 `libkernel32.a`，而 GNU ld 在 Linux 大小写敏感的文件系统上无法用大写名称找到它。此仓库用 `./scripts/build-windows-gnu.sh` 选择专用链接包装器，仅对该库名做小写规范化；它不创建临时导入库别名，也不修改全局或系统 linker 配置。Windows 原生 MSVC 工作流与普通 Cargo 构建保持不变。
 

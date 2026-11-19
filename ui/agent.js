@@ -146,6 +146,7 @@
     const modelButton = $("#agent-model-button");
     const label = $("#agent-model-label");
     const workspaceLabel = $("#agent-workspace-label");
+    const workspaceDefaultLabel = $("#agent-workspace-default-label");
     if (state.runtime.running) {
       label.textContent = `本地模型：${state.runtime.modelName || "运行中"}`;
       modelButton.classList.add("running");
@@ -156,6 +157,11 @@
     const path = currentWorkspace();
     workspaceLabel.textContent = path || "尚未选择";
     workspaceLabel.title = path || "选择工作文件夹后即可开始任务";
+    const task = activeTask();
+    const hasDifferentDefault = Boolean(task?.workspace && state.workspace && task.workspace !== state.workspace);
+    workspaceDefaultLabel.hidden = !hasDifferentDefault;
+    workspaceDefaultLabel.textContent = hasDifferentDefault ? `新任务默认：${state.workspace}` : "";
+    workspaceDefaultLabel.title = hasDifferentDefault ? state.workspace : "";
     $("#agent-model-button").title = state.runtime.running ? "前往运行页面管理本地模型" : "本地模型尚未启动；点击前往运行页面";
   }
 
@@ -1037,7 +1043,10 @@
       if (task && !task.entries.length && !task.pendingAction) task.workspace = canonical;
       persist();
       renderToolbar();
-      notify("工作文件夹已选择；此后新建的任务将使用该目录。已有任务保持原目录。");
+      const needsNewTask = Boolean(task?.entries.length && task.workspace !== canonical);
+      notify(needsNewTask
+        ? "工作文件夹已更换为新任务默认目录；当前任务仍使用原目录。点击“新任务”后即可使用新文件夹。"
+        : "工作文件夹已选择；新建的任务将使用该目录。已有任务保持原目录。");
     } catch (error) { notify(`选择工作文件夹失败：${error}`, true); }
   }
 

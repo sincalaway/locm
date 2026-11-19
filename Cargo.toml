@@ -1,6 +1,6 @@
 [package]
 name = "llama-server-launcher-rs"
-version = "0.2.10"
+version = "0.2.11"
 edition = "2021"
 description = "Minimal Rust launcher with verified local inference runtime installers"
 license = "MIT"
@@ -23,12 +23,10 @@ flate2 = "1"
 sysinfo = "0.35"
 tar = "0.4"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt", "time"] }
-tauri = { version = "2.12.6", optional = true }
+tauri = { version = "2.12.6", optional = true, features = [] }
 tauri-plugin-dialog = { version = "2", optional = true }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+tempfile = "3"
 
 [build-dependencies]
-tauri-build = "2.7.5"
-
-[dev-dependencies]
-tempfile = "3"
+tauri-build = { version = "2.7.5", features = [] }

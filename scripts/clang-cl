@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${LOCM_CLANG_CL:-}" ]]; then
+  exec "$LOCM_CLANG_CL" "$@"
+fi
+
+for tool in clang-cl clang-cl-20 clang-cl-19 clang-cl-18 clang-cl-17 clang-cl-16 clang-cl-15 clang-cl-14; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    exec "$tool" "$@"
+  fi
+done
+
+for tool in clang-20 clang-19 clang-18 clang-17 clang-16 clang-15 clang-14 clang; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    exec "$tool" --driver-mode=cl "$@"
+  fi
+done
+
+echo "No clang-cl, versioned clang-cl, or clang compiler was found." >&2
+exit 127

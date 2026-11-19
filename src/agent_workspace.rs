@@ -8,6 +8,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use tempfile::NamedTempFile;
 
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
@@ -53,6 +54,20 @@ pub struct WriteOutcome {
     pub written: bool,
     pub requires_confirmation: bool,
     pub cancelled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditFileOutcome {
+    pub edited: bool,
+    pub requires_confirmation: bool,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateFolderOutcome {
+    pub created: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -506,6 +521,168 @@ pub fn write_file(
     })
 }
 
+pub fn edit_file(
+    workspace: &str,
+    relative_path: &str,
+    old_text: &str,
+    new_text: &str,
+    allow_edit: bool,
+) -> Result<EditFileOutcome, String> {
+    if old_text.is_empty() {
+        return Err("old_text 不能为空；需要至少一个精确匹配片段".to_string());
+    }
+    if old_text.len() as u64 > MAX_TEXT_BYTES || new_text.len() as u64 > MAX_TEXT_BYTES {
+        return Err("old_text 和 new_text 的上限均为 1 MiB".to_string());
+    }
+
+    let root = workspace_root(workspace)?;
+    let components = safe_components(relative_path, false)?;
+    let target = checked_existing(&root, &components)?;
+    let metadata =
+        fs::symlink_metadata(&target).map_err(|error| format!("检查待编辑文件失败：{error}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Agent 不编辑符号链接".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("edit_file 只允许修改工作区内的普通文件".to_string());
+    }
+    if metadata.len() > MAX_TEXT_BYTES {
+        return Err("文件超过 1 MiB 安全上限；Agent 不编辑超大文件".to_string());
+    }
+    let original = fs::read_to_string(&target)
+        .map_err(|error| format!("文件不是可读取的 UTF-8 文本，或读取失败：{error}"))?;
+    let start = original
+        .find(old_text)
+        .ok_or_else(|| "old_text 未在文件中找到；文件未修改".to_string())?;
+    let first_character_bytes = original[start..]
+        .chars()
+        .next()
+        .map(char::len_utf8)
+        .ok_or_else(|| "old_text 未在文件中找到；文件未修改".to_string())?;
+    if original[start + first_character_bytes..].contains(old_text) {
+        return Err("old_text 在文件中出现多次，无法确定唯一修改位置；文件未修改".to_string());
+    }
+
+    let end = start + old_text.len();
+    let mut updated = String::with_capacity(original.len() - old_text.len() + new_text.len());
+    updated.push_str(&original[..start]);
+    updated.push_str(new_text);
+    updated.push_str(&original[end..]);
+    if updated.len() as u64 > MAX_TEXT_BYTES {
+        return Err("编辑后文件超过 1 MiB 安全上限；文件未修改".to_string());
+    }
+    if updated == original {
+        return Ok(EditFileOutcome {
+            edited: false,
+            requires_confirmation: false,
+            cancelled: false,
+        });
+    }
+    if !allow_edit {
+        return Ok(EditFileOutcome {
+            edited: false,
+            requires_confirmation: true,
+            cancelled: false,
+        });
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| "无法解析待编辑文件的工作区父目录".to_string())?;
+    let mut staged = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("创建原子写入临时文件失败：{error}"))?;
+    staged
+        .write_all(updated.as_bytes())
+        .map_err(|error| format!("写入原子编辑临时文件失败：{error}"))?;
+    staged
+        .as_file()
+        .set_permissions(metadata.permissions())
+        .map_err(|error| format!("保留原文件权限失败：{error}"))?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("同步原子编辑临时文件失败：{error}"))?;
+    staged
+        .persist(&target)
+        .map_err(|error| format!("原子替换工作区文件失败：{}", error.error))?;
+
+    Ok(EditFileOutcome {
+        edited: true,
+        requires_confirmation: false,
+        cancelled: false,
+    })
+}
+
+pub fn create_folder(workspace: &str, relative_path: &str) -> Result<CreateFolderOutcome, String> {
+    let root = workspace_root(workspace)?;
+    let components = safe_components(relative_path, false)?;
+    let mut current = root.clone();
+    let mut first_missing = None;
+
+    for (index, component) in components.iter().enumerate() {
+        let next = current.join(component);
+        match fs::symlink_metadata(&next) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("Agent 不跟随工作文件夹中的符号链接".to_string());
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err("创建文件夹的目标路径中存在非文件夹项目".to_string());
+            }
+            Ok(_) => {
+                let canonical = next
+                    .canonicalize()
+                    .map_err(|error| format!("检查工作区文件夹失败：{error}"))?;
+                if !canonical.starts_with(&root) {
+                    return Err("创建文件夹的路径超出所选工作文件夹".to_string());
+                }
+                current = canonical;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                first_missing = Some(index);
+                break;
+            }
+            Err(error) => return Err(format!("检查工作区文件夹失败：{error}")),
+        }
+    }
+
+    let Some(first_missing) = first_missing else {
+        return Ok(CreateFolderOutcome { created: false });
+    };
+
+    let mut created = false;
+    for component in &components[first_missing..] {
+        let next = current.join(component);
+        let created_here = match fs::create_dir(&next) {
+            Ok(()) => {
+                created = true;
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(error) => return Err(format!("创建工作区文件夹失败：{error}")),
+        };
+        let metadata = fs::symlink_metadata(&next)
+            .map_err(|error| format!("检查新工作区文件夹失败：{error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Agent 不跟随工作文件夹中的符号链接".to_string());
+        }
+        if !metadata.is_dir() {
+            return Err("创建文件夹的目标路径中存在非文件夹项目".to_string());
+        }
+        let canonical = next
+            .canonicalize()
+            .map_err(|error| format!("检查新工作区文件夹失败：{error}"))?;
+        if !canonical.starts_with(&root) {
+            if created_here {
+                let _ = fs::remove_dir(&next);
+            }
+            return Err("创建文件夹的路径超出所选工作文件夹".to_string());
+        }
+        current = canonical;
+    }
+
+    Ok(CreateFolderOutcome { created })
+}
+
 pub fn delete_file(workspace: &str, relative_path: &str) -> Result<(), String> {
     let root = workspace_root(workspace)?;
     let components = safe_components(relative_path, false)?;
@@ -645,8 +822,9 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_stream, collect_stream, delete_file, list_files, read_file, run_command,
-        search_files, write_file, MAX_SEARCH_FILES, MAX_SEARCH_MATCHES, MAX_TOOL_OUTPUT_BYTES,
+        capture_stream, collect_stream, create_folder, delete_file, edit_file, list_files,
+        read_file, run_command, search_files, write_file, MAX_SEARCH_FILES, MAX_SEARCH_MATCHES,
+        MAX_TOOL_OUTPUT_BYTES,
     };
     use std::{fs, io::Cursor, path::Path};
     use tempfile::tempdir;
@@ -694,6 +872,155 @@ mod tests {
         assert!(outcome.written);
         assert!(!outcome.requires_confirmation);
         assert_eq!(read_file(&root, "note.txt").unwrap(), "replacement");
+    }
+
+    #[test]
+    fn writing_a_file_creates_missing_parent_directories_inside_the_workspace() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let root = workspace.to_string_lossy();
+
+        let outcome = write_file(&root, "notes/drafts/README.txt", "created", false).unwrap();
+
+        assert!(outcome.written);
+        assert!(!outcome.requires_confirmation);
+        assert!(workspace.join("notes/drafts").is_dir());
+        assert_eq!(
+            read_file(&root, "notes/drafts/README.txt").unwrap(),
+            "created"
+        );
+    }
+
+    #[test]
+    fn create_folder_creates_an_empty_nested_directory() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let root = workspace.to_string_lossy();
+
+        let outcome = create_folder(&root, "notes/drafts").unwrap();
+
+        assert!(outcome.created);
+        let folder = workspace.join("notes/drafts");
+        assert!(folder.is_dir());
+        assert_eq!(fs::read_dir(folder).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn create_folder_is_idempotent_and_rejects_a_file_at_the_target() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let root = workspace.to_string_lossy();
+
+        assert!(create_folder(&root, "already-here").unwrap().created);
+        assert!(!create_folder(&root, "already-here").unwrap().created);
+        fs::write(workspace.join("ordinary-file"), "not a folder").unwrap();
+        assert!(create_folder(&root, "ordinary-file").is_err());
+    }
+
+    #[test]
+    fn create_folder_rejects_parent_traversal_and_absolute_paths() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let root = workspace.to_string_lossy();
+        let outside = temp.path().join("outside");
+
+        assert!(create_folder(&root, "../outside/escape").is_err());
+        assert!(create_folder(&root, &outside.to_string_lossy()).is_err());
+        assert!(!outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_folder_rejects_a_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, workspace.join("linked-outside")).unwrap();
+        let root = workspace.to_string_lossy();
+
+        assert!(create_folder(&root, "linked-outside/escape").is_err());
+        assert!(!outside.join("escape").exists());
+    }
+
+    #[test]
+    fn edit_file_requires_confirmation_then_replaces_one_exact_match() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::write(workspace.join("note.txt"), "before old text after").unwrap();
+        let root = workspace.to_string_lossy();
+
+        let preview = edit_file(&root, "note.txt", "old text", "new text", false).unwrap();
+        assert!(!preview.edited);
+        assert!(preview.requires_confirmation);
+        assert!(!preview.cancelled);
+        assert_eq!(
+            read_file(&root, "note.txt").unwrap(),
+            "before old text after"
+        );
+
+        let approved = edit_file(&root, "note.txt", "old text", "new text", true).unwrap();
+        assert!(approved.edited);
+        assert!(!approved.requires_confirmation);
+        assert_eq!(
+            read_file(&root, "note.txt").unwrap(),
+            "before new text after"
+        );
+    }
+
+    #[test]
+    fn edit_file_rejects_missing_absent_duplicate_overlapping_and_empty_matches() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let root = workspace.to_string_lossy();
+
+        assert!(edit_file(&root, "missing.txt", "old", "new", true).is_err());
+        fs::write(workspace.join("note.txt"), "alpha old omega").unwrap();
+        assert!(edit_file(&root, "note.txt", "absent", "new", true).is_err());
+        assert!(edit_file(&root, "note.txt", "", "new", true).is_err());
+        fs::write(workspace.join("note.txt"), "same | same").unwrap();
+        assert!(edit_file(&root, "note.txt", "same", "new", true).is_err());
+        fs::write(workspace.join("note.txt"), "aaa").unwrap();
+        assert!(edit_file(&root, "note.txt", "aa", "new", true).is_err());
+        assert_eq!(read_file(&root, "note.txt").unwrap(), "aaa");
+    }
+
+    #[test]
+    fn edit_file_rejects_parent_traversal_and_absolute_paths() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let outside = temp.path().join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+        let root = workspace.to_string_lossy();
+
+        assert!(edit_file(&root, "../outside.txt", "outside", "changed", true).is_err());
+        assert!(edit_file(
+            &root,
+            &outside.to_string_lossy(),
+            "outside",
+            "changed",
+            true
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(outside).unwrap(), "outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edit_file_rejects_a_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let outside = temp.path().join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+        symlink(&outside, workspace.join("linked.txt")).unwrap();
+        let root = workspace.to_string_lossy();
+
+        assert!(edit_file(&root, "linked.txt", "outside", "changed", true).is_err());
+        assert_eq!(fs::read_to_string(outside).unwrap(), "outside");
     }
 
     #[test]

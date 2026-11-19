@@ -1,6 +1,13 @@
 # llama-server-launcher-rs
-
 一个独立的 Rust MVP：保留原有 `llama-server` 配置启动示例，并新增两个彼此独立的本地引擎安装流程。它不是 LocModel 的源码，也不包含 LocModel 品牌资产或官方背书。
+
+## v0.2.11 更新
+- Agent 内部继续指令和工作区工具结果不再被误判为新用户任务；计划已显示后不会重复规划，模型重复输出计划时只进行一次有限纠偏，仍异常则安全暂停而不执行新工具。
+- 本地模型若在执行阶段返回普通文本或含糊的 JSON，Agent 只请求一次格式纠正；仍不合规就安全暂停并明确说明没有运行工具或命令。Agent 新增专用 `create_folder` JSON 工具，通过原生工作区后端创建空目录及缺失父目录；只接受相对路径，拒绝路径穿越和符号链接，目标已存在时幂等返回，不通过 shell，也不额外弹确认。
+- Agent 新增专用 `edit_file` JSON 工具，用户要求修改已有文件时优先按唯一精确 `old_text`/`new_text` 替换；缺失或多处匹配会安全失败。只允许工作区内现有 UTF-8 普通文件，拒绝路径穿越和符号链接；通过同目录临时文件原子替换，并沿用应用审批卡与系统原生确认。
+- Windows x64 新增真正的 Tauri/NSIS 安装程序；通过 Linux 上的 `cargo-xwin` 交叉构建 MSVC 目标，**没有在真实 Windows 设备启动验证**。安装器缺少 WebView2 Runtime 时会联网下载并运行微软引导安装器；Runtime 仍是应用运行所需组件。
+- 发布包含 Linux x86_64 原生桌面包、Windows x64 NSIS 安装器，以及明确标为未实机验证的 Windows x64 GNU 便携测试 ZIP；所有资产均不包含引擎或模型权重，`SHA256SUMS.txt` 提供校验值。
+- 自动回归：默认 Rust 23/23、desktop Rust 84/84、JavaScript 44/44 通过；`create_folder` 覆盖空目录、幂等、冲突、越界/符号链接拒绝和原生派发；`edit_file` 覆盖唯一精确替换、待确认不写入、缺失/多重/重叠匹配、越界/符号链接拒绝、原子替换、审批派发和确认卡。还验证创建目录/修改文件意图路由以及内部工具结果续接。Agent 工具仅做本机单元/协议测试，未在用户的 Windows 电脑上运行验证。
 
 ## v0.2.10 更新
 
@@ -80,9 +87,9 @@ cargo run --features desktop --bin local-engine-manager
 cargo build --locked --release --features desktop --bin local-engine-manager
 ```
 
-当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。v0.2.10 的 Linux x86_64 Tauri release 桌面程序为 Linux 原生构建；Windows x64 GNU GUI EXE 通过 Linux 交叉构建，测试包包含需与 EXE 同目录的 `WebView2Loader.dll`。Windows 还需要 WebView2 Runtime，且本版 Windows 包未在真实 Windows 设备启动验证。
+`tauri.conf.json` 为发行构建启用 Tauri NSIS bundle，`./scripts/build-windows-nsis.sh` 会在 Linux 上使用 `cargo-xwin` 和 `x86_64-pc-windows-msvc` 构建 Windows x64 安装器，输出位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 运行 LocM 仍需要 WebView2 Runtime；安装器配置为在 Runtime 缺失时联网下载并运行微软 Bootstrapper，因此它不是离线 Runtime 包。本版 Windows 安装器是交叉构建产物，未在真实 Windows 设备启动验证。
 
-**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。v0.2.7 包含 Agent 问候/身份/能力问题的直接答复，以及本地模型健康检查和网络/HTTP 错误诊断改进；本版验证结果和平台限制见上方更新说明及[部署与运行手册](docs/DEPLOYMENT.md)。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
+**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览、Linux `.deb`/AppImage 与 Windows MSI。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。v0.2.7 包含 Agent 问候/身份/能力问题的直接答复，以及本地模型健康检查和网络/HTTP 错误诊断改进；本版验证结果和平台限制见上方更新说明及[部署与运行手册](docs/DEPLOYMENT.md)。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 
 ## 使用命令
 
@@ -136,6 +143,16 @@ cargo test --locked --features desktop --bin local-engine-manager
 cargo build --release --locked
 cargo check --features desktop --bin local-engine-manager
 ```
+
+### Linux 上交叉构建 Windows x64 NSIS 安装器
+
+Tauri 官方的 Linux NSIS 路径使用 MSVC 目标和 `cargo-xwin`。在 Ubuntu/Debian 上安装 `nsis`、`lld`、`llvm` 和 `clang-18`（`scripts/clang-cl` 会以 CL driver mode 调用它，用于构建 `ring` 等依赖），安装 Rust target `x86_64-pc-windows-msvc`，并用 `cargo install --locked tauri-cli` 与 `cargo install --locked cargo-xwin` 安装构建工具，然后运行：
+
+```sh
+./scripts/build-windows-nsis.sh
+```
+
+该脚本调用真实 Tauri NSIS bundler；安装器输出在 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。NSIS 交叉构建比 Windows 原生构建的验证覆盖少，成功构建不代表已在 Windows 实机测试。
 
 ### Linux 上交叉构建 Windows x64 GNU 桌面版
 

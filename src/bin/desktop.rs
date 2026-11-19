@@ -1097,6 +1097,42 @@ fn agent_overwrite_confirmation_message(workspace: &str, path: &str, content: &s
     )
 }
 
+fn agent_edit_confirmation_message(
+    workspace: &str,
+    path: &str,
+    old_text: &str,
+    new_text: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    fn digest(text: &str) -> String {
+        Sha256::digest(text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+    fn preview(text: &str) -> (String, usize) {
+        (
+            text.chars().take(1_600).collect(),
+            text.chars().count().saturating_sub(1_600),
+        )
+    }
+
+    let (old_preview, old_omitted) = preview(old_text);
+    let (new_preview, new_omitted) = preview(new_text);
+    format!(
+        "工作文件夹：{workspace}\n目标文件：{path}\n旧片段大小：{} 字节\n旧片段 SHA-256：{}\n新片段大小：{} 字节\n新片段 SHA-256：{}\n\n旧文本预览（最多 1600 字符）：\n{}{}\n\n新文本预览（最多 1600 字符）：\n{}{}\n\n继续后只会把文件中唯一一处旧文本精确替换为新文本；若文件内容已变化、匹配缺失或不唯一，操作会失败。",
+        old_text.len(),
+        digest(old_text),
+        new_text.len(),
+        digest(new_text),
+        if old_preview.is_empty() { "（空）" } else { &old_preview },
+        if old_omitted > 0 { format!("\n……另有 {old_omitted} 个字符未显示") } else { String::new() },
+        if new_preview.is_empty() { "（空）" } else { &new_preview },
+        if new_omitted > 0 { format!("\n……另有 {new_omitted} 个字符未显示") } else { String::new() },
+    )
+}
+
 fn agent_command_confirmation_message(workspace: &str, program: &str, args: &[String]) -> String {
     let args_json = serde_json::to_string_pretty(args).unwrap_or_else(|_| "[]".to_string());
     format!(
@@ -1106,7 +1142,10 @@ fn agent_command_confirmation_message(workspace: &str, program: &str, args: &[St
 
 #[cfg(test)]
 mod agent_confirmation_tests {
-    use super::{agent_command_confirmation_message, agent_overwrite_confirmation_message};
+    use super::{
+        agent_command_confirmation_message, agent_edit_confirmation_message,
+        agent_overwrite_confirmation_message,
+    };
 
     #[test]
     fn command_confirmation_shows_exact_program_arguments_and_privilege_warning() {
@@ -1129,6 +1168,21 @@ mod agent_confirmation_tests {
         assert!(message.contains("目标文件：note.txt"));
         assert!(message.contains("新内容 SHA-256："));
         assert!(message.contains("……另有 2 个字符未显示"));
+    }
+
+    #[test]
+    fn edit_confirmation_includes_target_both_snippets_hashes_and_exact_match_warning() {
+        let message =
+            agent_edit_confirmation_message("/tmp/work", "README.md", "old title", "new title");
+
+        assert!(message.contains("目标文件：README.md"));
+        assert!(message.contains("旧文本预览"));
+        assert!(message.contains("old title"));
+        assert!(message.contains("新文本预览"));
+        assert!(message.contains("new title"));
+        assert!(message.contains("旧片段 SHA-256："));
+        assert!(message.contains("新片段 SHA-256："));
+        assert!(message.contains("唯一一处旧文本精确替换"));
     }
 }
 
@@ -1177,6 +1231,18 @@ async fn agent_read_file(workspace: String, relative_path: String) -> Result<Str
 }
 
 #[tauri::command]
+async fn agent_create_folder(
+    workspace: String,
+    relative_path: String,
+) -> Result<agent_workspace::CreateFolderOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_workspace::create_folder(&workspace, &relative_path)
+    })
+    .await
+    .map_err(|error| format!("创建工作区文件夹失败：{error}"))?
+}
+
+#[tauri::command]
 async fn agent_write_file(
     app: AppHandle,
     workspace: String,
@@ -1202,6 +1268,46 @@ async fn agent_write_file(
     })
     .await
     .map_err(|error| format!("写入工作区文件失败：{error}"))?
+}
+
+#[tauri::command]
+async fn agent_edit_file(
+    app: AppHandle,
+    workspace: String,
+    relative_path: String,
+    old_text: String,
+    new_text: String,
+    allow_edit: bool,
+) -> Result<agent_workspace::EditFileOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if allow_edit {
+            let preview = agent_workspace::edit_file(
+                &workspace,
+                &relative_path,
+                &old_text,
+                &new_text,
+                false,
+            )?;
+            if !preview.requires_confirmation {
+                return Ok(preview);
+            }
+            if !confirm_agent_action(
+                &app,
+                "LocM Agent · 确认修改文件",
+                &agent_edit_confirmation_message(&workspace, &relative_path, &old_text, &new_text),
+            ) {
+                return Ok(agent_workspace::EditFileOutcome {
+                    edited: false,
+                    requires_confirmation: false,
+                    cancelled: true,
+                });
+            }
+        }
+        // Re-read and re-check after the native confirmation before writing.
+        agent_workspace::edit_file(&workspace, &relative_path, &old_text, &new_text, allow_edit)
+    })
+    .await
+    .map_err(|error| format!("编辑工作区文件失败：{error}"))?
 }
 
 #[tauri::command]
@@ -2203,6 +2309,8 @@ fn main() {
             agent_list_files,
             agent_search_files,
             agent_read_file,
+            agent_create_folder,
+            agent_edit_file,
             agent_write_file,
             agent_delete_file,
             agent_run_command,

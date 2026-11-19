@@ -4,6 +4,7 @@
   else root.LocmAgentProtocol = api;
 })(globalThis, function () {
   const CONTINUATION_PREFIX = "【LocM 应用内部继续指令；不是用户新请求】";
+  const TOOL_RESULT_PREFIX = "【LocM 应用内部工作区工具结果；不是用户新请求】";
   const encoder = new TextEncoder();
 
   function appendContinuation(task, instruction) {
@@ -12,6 +13,13 @@
       role: "user",
       content: `${CONTINUATION_PREFIX}\n${String(instruction || "请继续处理当前任务。")}`,
     });
+  }
+
+  function appendDuplicatePlanRetry(task, retriesRemaining) {
+    const remaining = Math.max(0, Math.floor(Number(retriesRemaining) || 0));
+    if (!remaining) return { status: "exhausted", retriesRemaining: 0 };
+    appendContinuation(task, "计划已经展示，上一条模型回复重复生成了计划。这不是用户新请求；不要重新生成或修改计划。请根据已展示计划直接执行下一步并返回对应的唯一 JSON 动作；若下一步需要检查工作区，使用 list_files；若任务已完成，直接总结。不得声称尚未执行的操作已经完成。");
+    return { status: "retry", retriesRemaining: remaining - 1 };
   }
 
   function validatePlan(parsed) {
@@ -57,5 +65,5 @@
     return result;
   }
 
-  return { CONTINUATION_PREFIX, appendContinuation, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
+  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, appendContinuation, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
 });

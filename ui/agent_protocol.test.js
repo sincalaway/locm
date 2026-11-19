@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildMessages } = require("./agent_context.js");
-const { appendContinuation, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+const { TOOL_RESULT_PREFIX, appendContinuation, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
 
 test("a plan is recorded once and the next model request gets an explicit internal continuation", () => {
   const task = { needsPlan: true, plan: [], turns: [{ role: "user", content: "检查项目并修复问题" }] };
@@ -65,6 +65,28 @@ test("continuations are user-role boundaries, never a second trailing assistant"
   const task = { turns: [{ role: "assistant", content: "进度" }] };
   appendContinuation(task, "继续。");
   assert.deepEqual(task.turns.map(({ role }) => role), ["assistant", "user"]);
+});
+
+test("a duplicate plan gets at most one explicit correction continuation", () => {
+  const task = {
+    turns: [
+      { role: "user", content: "检查工作区" },
+      { role: "assistant", content: '{"type":"plan","steps":["列出文件"]}' },
+      { role: "user", content: "【LocM 应用内部继续指令；不是用户新请求】执行计划" },
+      { role: "assistant", content: '{"type":"plan","steps":["重新列计划"]}' },
+    ],
+  };
+
+  const retry = appendDuplicatePlanRetry(task, 1);
+  assert.deepEqual(retry, { status: "retry", retriesRemaining: 0 });
+  assert.equal(task.turns.at(-1).role, "user");
+  assert.match(task.turns.at(-1).content, /^【LocM 应用内部继续指令；不是用户新请求】/);
+  assert.match(task.turns.at(-1).content, /不要重新生成或修改计划/);
+  assert.match(task.turns.at(-1).content, /list_files/);
+  const countBeforeExhaustedRetry = task.turns.length;
+  assert.deepEqual(appendDuplicatePlanRetry(task, retry.retriesRemaining), { status: "exhausted", retriesRemaining: 0 });
+  assert.equal(task.turns.length, countBeforeExhaustedRetry);
+  assert.equal(TOOL_RESULT_PREFIX, "【LocM 应用内部工作区工具结果；不是用户新请求】");
 });
 
 test("loading historical task entries collapses only identical adjacent plan cards", () => {

@@ -38,3 +38,5 @@
 .agent-workspace-paths{display:grid;min-width:0;max-width:min(35vw,380px);gap:3px}.agent-workspace-paths small{overflow:hidden;color:var(--muted);font-size:9px;text-overflow:ellipsis;white-space:nowrap}
 
 .agent-workspace-context{display:grid;min-width:0;gap:3px}.agent-workspace-context>span{font-size:9px;font-weight:700;line-height:1.2}.agent-workspace-context .agent-workspace-paths{max-width:min(42vw,460px)}.agent-workspace-context .agent-workspace-paths small{font-size:9px}
+
+.agent-task-remove:disabled{opacity:.45;cursor:not-allowed}

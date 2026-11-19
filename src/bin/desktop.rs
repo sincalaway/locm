@@ -148,6 +148,7 @@ struct RuntimeData {
 
 struct RuntimeState {
     inner: Mutex<RuntimeData>,
+    shutting_down: AtomicBool,
 }
 
 impl Default for RuntimeState {
@@ -161,18 +162,175 @@ impl Default for RuntimeState {
                 restart: None,
                 last_error: None,
             }),
+            shutting_down: AtomicBool::new(false),
         }
     }
 }
 
-impl Drop for RuntimeState {
-    fn drop(&mut self) {
-        if let Ok(data) = self.inner.get_mut() {
-            if let Some(mut child) = data.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+fn stop_runtime_data(data: &mut RuntimeData) -> std::io::Result<()> {
+    data.restart = None;
+    if let Some(mut child) = data.child.take() {
+        let should_kill = match child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) | Err(_) => true,
+        };
+        if should_kill {
+            if let Err(error) = child.kill() {
+                data.child = Some(child);
+                return Err(error);
             }
         }
+        if let Err(error) = child.wait() {
+            data.child = Some(child);
+            return Err(error);
+        }
+    }
+    data.model_name = None;
+    data.context = "auto".to_string();
+    data.bind_host = "127.0.0.1".to_string();
+    data.last_error = None;
+    Ok(())
+}
+
+fn shutdown_runtime_state(state: &RuntimeState) -> std::io::Result<()> {
+    state.shutting_down.store(true, Ordering::Release);
+    let mut data = state
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    stop_runtime_data(&mut data)
+}
+
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        self.shutting_down.store(true, Ordering::Release);
+        let data = self
+            .inner
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = stop_runtime_data(data);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod runtime_shutdown_tests {
+    use super::{shutdown_runtime_state, spawn_server_ready, RestartSpec, RuntimeState};
+    use std::{
+        fs,
+        net::TcpListener,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+        process::{Child, Command},
+        sync::Arc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    struct KillOnDrop(Child);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn process_is_present(pid: u32) -> bool {
+        Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    #[test]
+    fn shutdown_kills_only_the_model_child_owned_by_runtime_state() {
+        let state = RuntimeState::default();
+        let owned = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let owned_pid = owned.id();
+        let unrelated = KillOnDrop(Command::new("/bin/sleep").arg("30").spawn().unwrap());
+        let unrelated_pid = unrelated.0.id();
+        {
+            let mut data = state.inner.lock().unwrap();
+            data.child = Some(owned);
+            data.model_name = Some("test-model".to_string());
+            data.restart = Some(RestartSpec {
+                executable: "/bin/sleep".into(),
+                args: vec!["30".into()],
+                model_name: "test-model".to_string(),
+                bind_host: "127.0.0.1".to_string(),
+                port: 8666,
+                enabled: true,
+                attempts_used: 0,
+                next_attempt_at: Some(Instant::now()),
+            });
+        }
+
+        shutdown_runtime_state(&state).unwrap();
+
+        assert!(
+            !process_is_present(owned_pid),
+            "LocM-owned model process survived shutdown"
+        );
+        assert!(
+            process_is_present(unrelated_pid),
+            "unrelated process was terminated"
+        );
+        let data = state.inner.lock().unwrap();
+        assert!(data.child.is_none());
+        assert!(data.restart.is_none());
+        assert!(data.model_name.is_none());
+    }
+
+    #[test]
+    fn shutdown_interrupts_startup_readiness_and_reaps_the_starting_process() {
+        let state = Arc::new(RuntimeState::default());
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("fake-model-server");
+        let pid_file = directory.path().join("server.pid");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$1\"\nexec /bin/sleep 30\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let startup_state = state.clone();
+        let startup_executable = executable.clone();
+        let startup_pid_file = pid_file.clone();
+        let startup = thread::spawn(move || {
+            let _data = startup_state.inner.lock().unwrap();
+            spawn_server_ready(
+                &startup_executable,
+                &[startup_pid_file.into_os_string()],
+                "127.0.0.1",
+                port,
+                &startup_state.shutting_down,
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pid = loop {
+            if let Ok(value) = fs::read_to_string(&pid_file) {
+                if let Ok(pid) = value.trim().parse::<u32>() {
+                    break Some(pid);
+                }
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        let shutdown_started = Instant::now();
+        shutdown_runtime_state(&state).unwrap();
+        assert!(shutdown_started.elapsed() < Duration::from_secs(3));
+        let error = startup.join().unwrap().unwrap_err();
+        assert!(error.contains("LocM 正在关闭"));
+        assert!(pid.is_some(), "fake model server never started");
+        assert!(
+            !process_is_present(pid.unwrap()),
+            "starting model process survived shutdown"
+        );
     }
 }
 
@@ -250,20 +408,42 @@ fn read_chat_http_error(response: reqwest::blocking::Response) -> String {
 }
 
 const AGENT_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+const AGENT_MODEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const AGENT_MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const AGENT_MODEL_GUIDANCE: &str =
-    "Agent 依赖运行页已启动并可访问的本地模型；请在“运行”页面启动模型，并确认服务仍在运行。";
+    "请在“运行”页面确认本地模型仍在运行且 API 可访问；仅凭此错误不能判定模型或端口的具体根因。";
 
 fn format_agent_transport_error(stage: &str, url: &str, error: &reqwest::Error) -> String {
-    let cause = if error.is_connect() {
-        "连接失败"
+    let cause = if error.is_timeout() && stage == "推理请求" {
+        format!(
+            "连接或推理响应超时（连接上限 {} 秒、请求总上限 {} 分钟）",
+            AGENT_MODEL_CONNECT_TIMEOUT.as_secs(),
+            AGENT_MODEL_REQUEST_TIMEOUT.as_secs() / 60
+        )
     } else if error.is_timeout() {
-        "请求超时"
+        format!(
+            "本地健康检查超时（最多 {} 秒）",
+            AGENT_HEALTH_TIMEOUT.as_secs()
+        )
+    } else if error.is_connect() {
+        "连接失败".to_string()
     } else {
-        "发送阶段失败，未获得可用 HTTP 响应"
+        "发送阶段失败，未获得可用 HTTP 响应".to_string()
     };
     format!(
         "Agent 本地模型{stage}发送阶段失败（{cause}），目标地址：{url}。{AGENT_MODEL_GUIDANCE} 底层错误详情：{error}"
     )
+}
+
+fn build_agent_model_client(
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> Result<reqwest::blocking::Client, reqwest::Error> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .build()
 }
 
 fn format_agent_http_error(stage: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
@@ -336,8 +516,9 @@ mod chat_http_error_tests {
 #[cfg(test)]
 mod agent_local_model_diagnostics_tests {
     use super::{
-        check_agent_model_health, format_agent_http_error, format_agent_transport_error,
-        AGENT_MODEL_GUIDANCE,
+        build_agent_model_client, check_agent_model_health, format_agent_http_error,
+        format_agent_transport_error, AGENT_MODEL_CONNECT_TIMEOUT, AGENT_MODEL_GUIDANCE,
+        AGENT_MODEL_REQUEST_TIMEOUT,
     };
     use reqwest::{blocking::Client, StatusCode};
     use std::{
@@ -360,11 +541,42 @@ mod agent_local_model_diagnostics_tests {
     }
 
     fn client() -> Client {
-        Client::builder()
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(2))
-            .build()
+        build_agent_model_client(AGENT_MODEL_CONNECT_TIMEOUT, AGENT_MODEL_REQUEST_TIMEOUT)
+            .expect("Agent 本地模型客户端应可构造")
+    }
+
+    #[test]
+    fn agent_model_client_uses_a_long_local_connect_window_and_bounded_request_timeout() {
+        assert_eq!(AGENT_MODEL_CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(AGENT_MODEL_REQUEST_TIMEOUT, Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn inference_reports_the_configured_timeout_when_a_local_server_stalls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(Duration::from_millis(150));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+        });
+        let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
+        let error = build_agent_model_client(Duration::from_secs(1), Duration::from_millis(20))
             .unwrap()
+            .post(&url)
+            .send()
+            .unwrap_err();
+        worker.join().unwrap();
+
+        assert!(error.is_timeout());
+        let message = format_agent_transport_error("推理请求", &url, &error);
+        assert!(message.contains("连接上限 10 秒"));
+        assert!(message.contains("请求总上限 30 分钟"));
+        assert!(message.contains(AGENT_MODEL_GUIDANCE));
+        assert!(message.contains("不能判定"));
     }
 
     #[test]
@@ -1346,7 +1558,13 @@ fn runtime_status_for(state: &RuntimeState, port: u16) -> Result<RuntimeInfo, St
         }
     });
     if let Some(spec) = restart_plan {
-        match spawn_server_ready(&spec.executable, &spec.args, &spec.bind_host, spec.port) {
+        match spawn_server_ready(
+            &spec.executable,
+            &spec.args,
+            &spec.bind_host,
+            spec.port,
+            &state.shutting_down,
+        ) {
             Ok(process) => {
                 data.child = Some(process);
                 data.model_name = Some(spec.model_name);
@@ -1396,6 +1614,9 @@ async fn start_local_model(
             .find(|model| model.name == model_name)
             .ok_or_else(|| "所选模型不在本地模型目录中".to_string())?;
         let state = app.state::<RuntimeState>();
+        if state.shutting_down.load(Ordering::Acquire) {
+            return Err("LocM 正在关闭，不能启动模型".to_string());
+        }
         let mut data = state
             .inner
             .lock()
@@ -1441,7 +1662,13 @@ async fn start_local_model(
             &options,
             &capabilities,
         )?;
-        let process = spawn_server_ready(&executable, &args, &bind_host, settings.api_port)?;
+        let process = spawn_server_ready(
+            &executable,
+            &args,
+            &bind_host,
+            settings.api_port,
+            &state.shutting_down,
+        )?;
         data.child = Some(process);
         data.model_name = Some(model_name.clone());
         data.context = options.context.clone();
@@ -1492,9 +1719,13 @@ fn spawn_server_ready(
     args: &[OsString],
     host: &str,
     port: u16,
+    shutting_down: &AtomicBool,
 ) -> Result<Child, String> {
+    if shutting_down.load(Ordering::Acquire) {
+        return Err("LocM 正在关闭，已取消模型启动".to_string());
+    }
     let mut process = spawn_server(executable, args)?;
-    if let Err(error) = wait_server_ready(&mut process, host, port) {
+    if let Err(error) = wait_server_ready(&mut process, host, port, shutting_down) {
         let _ = process.kill();
         let _ = process.wait();
         return Err(error);
@@ -1502,7 +1733,12 @@ fn spawn_server_ready(
     Ok(process)
 }
 
-fn wait_server_ready(process: &mut Child, host: &str, port: u16) -> Result<(), String> {
+fn wait_server_ready(
+    process: &mut Child,
+    host: &str,
+    port: u16,
+    shutting_down: &AtomicBool,
+) -> Result<(), String> {
     let endpoint = format!("http://{host}:{port}/health");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(700))
@@ -1510,6 +1746,9 @@ fn wait_server_ready(process: &mut Child, host: &str, port: u16) -> Result<(), S
         .map_err(|error| error.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < deadline {
+        if shutting_down.load(Ordering::Acquire) {
+            return Err("LocM 正在关闭，已取消模型启动".to_string());
+        }
         if let Some(status) = process
             .try_wait()
             .map_err(|error| format!("检查 llama-server 状态失败：{error}"))?
@@ -1596,15 +1835,13 @@ async fn chat_complete(
                 "Agent 无法请求本机模型。{AGENT_MODEL_GUIDANCE} {detail}"
             ));
         }
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(2))
-            .build()
-            .map_err(|error| {
-                format!(
+        let client =
+            build_agent_model_client(AGENT_MODEL_CONNECT_TIMEOUT, AGENT_MODEL_REQUEST_TIMEOUT)
+                .map_err(|error| {
+                    format!(
                     "Agent 无法初始化本机模型客户端。{AGENT_MODEL_GUIDANCE} 底层错误详情：{error}"
                 )
-            })?;
+                })?;
         check_agent_model_health(&client, &status.bind_host, settings.api_port)?;
         let url = format!(
             "http://{}:{}/v1/chat/completions",
@@ -2010,9 +2247,14 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("无法构建本地 AI 引擎管理器")
-        .run(move |_app_handle, event| {
+        .run(move |app_handle, event| {
             if matches!(event, RunEvent::Exit) {
                 schedule_stop.store(true, Ordering::Release);
+                if let Some(state) = app_handle.try_state::<RuntimeState>() {
+                    if let Err(error) = shutdown_runtime_state(&state) {
+                        eprintln!("LocM 关闭时停止本机模型失败：{error}");
+                    }
+                }
             }
         });
 }

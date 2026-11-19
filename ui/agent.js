@@ -3,6 +3,7 @@
   const Execution = window.LocmAgentExecution;
   const Protocol = window.LocmAgentProtocol;
   const WorkspaceState = window.LocmAgentWorkspace;
+  const History = window.LocmAgentHistory;
   const TASKS_KEY = "locm-agent-tasks-v1";
   const WORKSPACE_KEY = "locm-agent-workspace-v1";
   const CURRENT_TASK_KEY = "locm-agent-current-task-v1";
@@ -112,6 +113,26 @@
     try { localStorage.setItem(CURRENT_TASK_KEY, state.currentTaskId || ""); } catch { /* The current task remains available for this session. */ }
     return tasksSaved;
   }
+  function removeTaskFromHistory(task) {
+    if (state.busy) {
+      notify("当前有任务正在处理；请等待或暂停后再删除历史。", true);
+      return;
+    }
+    const title = task.title || "新任务";
+    const pendingNote = task.pendingAction
+      ? "\n该任务有待确认操作；删除只会丢弃历史记录，不会执行该操作。"
+      : "";
+    if (!window.confirm(`确定删除任务“${title}”的本机历史记录吗？只会从左侧历史和本机存储中移除此任务，不会删除工作区文件。${pendingNote}`)) return;
+    const result = History.removeTaskAndPersist(state, task.id, persist, state.busy);
+    if (result.status === "persist_failed") {
+      notify("任务历史未能写入本机存储；删除已撤销。", true);
+      render();
+      return;
+    }
+    if (result.status !== "removed") return;
+    render();
+    notify("任务历史已从本机移除；工作区文件未更改。");
+  }
   function notify(message, error = false) {
     const toast = document.getElementById("toast");
     if (!toast) return;
@@ -194,7 +215,18 @@
         persist();
         render();
       });
-      row.append(open);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "agent-task-remove";
+      remove.textContent = "×";
+      remove.title = `删除“${task.title || "新任务"}”历史`;
+      remove.setAttribute("aria-label", remove.title);
+      remove.disabled = state.busy;
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        removeTaskFromHistory(task);
+      });
+      row.append(open, remove);
       list.append(row);
     });
     if (!state.tasks.length) {
@@ -319,6 +351,7 @@
 
   function renderApproval(task, container) {
     const action = task.pendingAction;
+    const displayWorkspace = WorkspaceState.formatWorkspaceForDisplay(task.workspace);
     container.hidden = false;
     const heading = document.createElement("h3");
     const explanation = document.createElement("p");
@@ -328,17 +361,17 @@
     details.className = "agent-approval-details";
     if (action.kind === "command") {
       heading.textContent = "Agent 请求运行一条命令";
-      explanation.textContent = `点击后还会弹出系统原生确认框，显示精确程序和参数。命令仍以当前用户权限运行并继承环境变量，工作目录为：${task.workspace}；程序可能访问工作区外文件或网络。直接进程最多运行 120 秒，每条输出流最多保留 32 KiB，超时不保证终止其启动的子进程。`;
+      explanation.textContent = `点击后还会弹出系统原生确认框，显示精确程序和参数。命令仍以当前用户权限运行并继承环境变量，工作目录为：${displayWorkspace}；程序可能访问工作区外文件或网络。直接进程最多运行 120 秒，每条输出流最多保留 32 KiB，超时不保证终止其启动的子进程。`;
       preview.textContent = JSON.stringify([action.program, ...(action.args || [])], null, 2);
       summary.textContent = "查看精确程序和参数";
     } else if (action.kind === "delete") {
       heading.textContent = "Agent 请求删除一个文件";
-      explanation.textContent = `点击后还会弹出系统原生确认框；仅删除工作区内的普通文件，不会删除目录或符号链接：${task.workspace}`;
+      explanation.textContent = `点击后还会弹出系统原生确认框；仅删除工作区内的普通文件，不会删除目录或符号链接：${displayWorkspace}`;
       preview.textContent = action.path;
       summary.textContent = "查看要删除的文件";
     } else {
       heading.textContent = "目标文件已存在，需要确认覆盖";
-      explanation.textContent = `点击后还会弹出系统原生确认框，并显示新内容预览及 SHA-256；覆盖仅发生在当前工作区：${task.workspace}`;
+      explanation.textContent = `点击后还会弹出系统原生确认框，并显示新内容预览及 SHA-256；覆盖仅发生在当前工作区：${displayWorkspace}`;
       preview.textContent = action.content || "（空文件）";
       summary.textContent = `查看将写入 ${action.path} 的新内容`;
     }
@@ -1063,6 +1096,7 @@
       const canonical = await invoke("agent_workspace_path", { workspace: selected });
       const task = activeTask();
       const selection = WorkspaceState.applySelection(task, canonical);
+      const displayCanonical = WorkspaceState.formatWorkspaceForDisplay(canonical);
       state.workspace = selection.defaultWorkspace;
       if (task && selection.updateTaskWorkspace) task.workspace = selection.taskWorkspace;
       persist();
@@ -1070,8 +1104,8 @@
       updateComposerState();
       const needsNewTask = Boolean(task?.workspace && task.workspace !== canonical);
       notify(needsNewTask
-        ? `新任务默认目录已设为：${canonical}。当前任务仍绑定：${task.workspace}。点击“新任务”后即可在新目录开始任务。`
-        : `新任务默认目录已设为：${canonical}。已有任务仍使用各自绑定的目录。`);
+        ? `新任务默认目录已设为：${displayCanonical}。当前任务仍绑定：${WorkspaceState.formatWorkspaceForDisplay(task.workspace)}。点击“新任务”后即可在新目录开始任务。`
+        : `新任务默认目录已设为：${displayCanonical}。已有任务仍使用各自绑定的目录。`);
     } catch (error) { notify(`选择工作文件夹失败：${error}`, true); }
   }
 

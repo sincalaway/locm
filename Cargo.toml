@@ -1,6 +1,6 @@
 [package]
 name = "llama-server-launcher-rs"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2021"
 description = "Minimal Rust launcher with verified local inference runtime installers"
 license = "MIT"

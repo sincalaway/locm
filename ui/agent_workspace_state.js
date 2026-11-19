@@ -3,23 +3,32 @@
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.LocmAgentWorkspace = api;
 })(globalThis, function () {
+  function formatWorkspaceForDisplay(path) {
+    const value = String(path || "");
+    const uncPrefix = "\\\\?\\UNC\\";
+    if (value.slice(0, uncPrefix.length).toUpperCase() === uncPrefix.toUpperCase()) {
+      return `\\\\${value.slice(uncPrefix.length)}`;
+    }
+    return value.startsWith("\\\\?\\") ? value.slice(4) : value;
+  }
+
   function displayState(task, defaultWorkspace) {
     const selectedDefault = String(defaultWorkspace || "");
     const taskWorkspace = String(task?.workspace || "");
     if (!taskWorkspace) {
       return {
         primaryLabel: "新任务默认工作区",
-        primaryPath: selectedDefault || "尚未选择",
+        primaryPath: formatWorkspaceForDisplay(selectedDefault || "尚未选择"),
         secondaryText: "",
         showSecondary: false,
       };
     }
     return {
       primaryLabel: "当前任务绑定目录",
-      primaryPath: taskWorkspace,
+      primaryPath: formatWorkspaceForDisplay(taskWorkspace),
       secondaryText: selectedDefault === taskWorkspace
         ? "新任务默认目录：与当前任务相同"
-        : `新任务默认目录：${selectedDefault || "尚未选择"}`,
+        : `新任务默认目录：${formatWorkspaceForDisplay(selectedDefault || "尚未选择")}`,
       showSecondary: true,
     };
   }
@@ -47,5 +56,5 @@
     return String(defaultWorkspace || "");
   }
 
-  return { displayState, isUnstartedTask, applySelection, workspaceForNewTask };
+  return { displayState, formatWorkspaceForDisplay, isUnstartedTask, applySelection, workspaceForNewTask };
 });

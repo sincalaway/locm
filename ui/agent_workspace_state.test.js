@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { applySelection, displayState, isUnstartedTask, workspaceForNewTask } = require("./agent_workspace_state.js");
+const { applySelection, displayState, formatWorkspaceForDisplay, isUnstartedTask, workspaceForNewTask } = require("./agent_workspace_state.js");
 
 test("makes the current task binding and new-task default distinct in the picker", () => {
   const task = { workspace: "D:\\抓取" };
@@ -49,4 +49,26 @@ test("only an empty, unstarted draft can inherit a newly selected directory", ()
   });
   assert.equal(isUnstartedTask({ ...draft, execution: { steps: [{ status: "completed" }] } }), false);
   assert.equal(isUnstartedTask({ ...draft, pendingAction: { kind: "delete" } }), false);
+});
+
+test("formats Windows extended paths for display while retaining canonical paths for work", () => {
+  const canonical = "\\\\?\\D:\\workspace";
+  const state = { tasks: [], currentTaskId: null };
+  const selection = applySelection(null, canonical);
+
+  assert.equal(formatWorkspaceForDisplay(canonical), "D:\\workspace");
+  assert.equal(displayState(null, canonical).primaryPath, "D:\\workspace");
+  assert.equal(selection.defaultWorkspace, canonical);
+  assert.equal(workspaceForNewTask(selection.defaultWorkspace), canonical);
+
+  const task = { workspace: canonical };
+  assert.equal(displayState(task, canonical).primaryPath, "D:\\workspace");
+  assert.equal(task.workspace, canonical);
+  assert.deepEqual(state, { tasks: [], currentTaskId: null });
+});
+
+test("formats extended UNC paths but leaves ordinary paths unchanged", () => {
+  assert.equal(formatWorkspaceForDisplay("\\\\?\\UNC\\server\\share\\work"), "\\\\server\\share\\work");
+  assert.equal(formatWorkspaceForDisplay("D:\\workspace"), "D:\\workspace");
+  assert.equal(formatWorkspaceForDisplay(""), "");
 });

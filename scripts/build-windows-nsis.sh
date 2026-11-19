@@ -35,8 +35,12 @@ if ! rustup target list --installed | grep -qx 'x86_64-pc-windows-msvc'; then
   exit 2
 fi
 
-export CC_x86_64_pc_windows_msvc="$repo_root/scripts/clang-cl"
-exec cargo tauri build \
+compiler_shim_dir="$(mktemp -d "${TMPDIR:-/tmp}/locm-clang-cl.XXXXXX")"
+trap 'rm -rf "$compiler_shim_dir"' EXIT
+ln -s "$repo_root/scripts/clang-cl" "$compiler_shim_dir/clang-cl"
+export PATH="$compiler_shim_dir:$PATH"
+export CC_x86_64_pc_windows_msvc="$compiler_shim_dir/clang-cl"
+cargo tauri build \
   --runner cargo-xwin \
   --target x86_64-pc-windows-msvc \
   --bundles nsis

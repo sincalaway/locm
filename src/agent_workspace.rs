@@ -12,6 +12,11 @@ use std::{
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
+const MAX_SEARCH_FILES: usize = 500;
+const MAX_SEARCH_ENTRIES: usize = 1_000;
+const MAX_SEARCH_MATCHES: usize = 64;
+const MAX_SEARCH_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SEARCH_PREVIEW_BYTES: usize = 240;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_LIST_DEPTH: usize = 6;
 const MAX_COMMAND_RUNTIME: Duration = Duration::from_secs(120);
@@ -23,6 +28,23 @@ pub struct WorkspaceFile {
     pub path: String,
     pub kind: String,
     pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatch {
+    pub path: String,
+    pub line_number: usize,
+    pub line: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOutcome {
+    pub matches: Vec<SearchMatch>,
+    pub files_searched: usize,
+    pub files_skipped: usize,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -205,6 +227,190 @@ pub fn list_files(workspace: &str, relative_path: &str) -> Result<Vec<WorkspaceF
     let mut entries = Vec::new();
     walk(&root, &directory, 0, &mut entries)?;
     Ok(entries)
+}
+
+pub fn search_files(
+    workspace: &str,
+    relative_path: &str,
+    query: &str,
+    case_sensitive: bool,
+) -> Result<SearchOutcome, String> {
+    if query.trim().is_empty() || query.len() > 256 || query.contains('\0') {
+        return Err("搜索内容不能为空，且最多为 256 字节".to_string());
+    }
+    let root = workspace_root(workspace)?;
+    let components = safe_components(relative_path, true)?;
+    let directory = if components.is_empty() {
+        root.clone()
+    } else {
+        checked_existing(&root, &components)?
+    };
+    if !directory.is_dir() {
+        return Err("搜索起点必须是工作区内的文件夹".to_string());
+    }
+
+    struct SearchState<'a> {
+        query: &'a str,
+        folded_query: String,
+        case_sensitive: bool,
+        matches: Vec<SearchMatch>,
+        files_seen: usize,
+        files_searched: usize,
+        files_skipped: usize,
+        entries_seen: usize,
+        bytes_searched: u64,
+        truncated: bool,
+    }
+
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        depth: usize,
+        state: &mut SearchState<'_>,
+    ) -> Result<(), String> {
+        if depth > MAX_LIST_DEPTH
+            || state.files_seen >= MAX_SEARCH_FILES
+            || state.entries_seen >= MAX_SEARCH_ENTRIES
+            || state.matches.len() >= MAX_SEARCH_MATCHES
+        {
+            state.truncated = true;
+            return Ok(());
+        }
+        let entry_budget = MAX_SEARCH_ENTRIES.saturating_sub(state.entries_seen);
+        let mut entries = Vec::new();
+        for entry in
+            fs::read_dir(directory).map_err(|error| format!("读取搜索目录失败：{error}"))?
+        {
+            if entries.len() >= entry_budget {
+                state.truncated = true;
+                break;
+            }
+            entries.push(entry.map_err(|error| format!("读取搜索目录项失败：{error}"))?);
+        }
+        entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+        for entry in entries {
+            if state.files_seen >= MAX_SEARCH_FILES
+                || state.entries_seen >= MAX_SEARCH_ENTRIES
+                || state.matches.len() >= MAX_SEARCH_MATCHES
+                || state.bytes_searched >= MAX_SEARCH_TOTAL_BYTES
+            {
+                state.truncated = true;
+                break;
+            }
+            state.entries_seen += 1;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.eq_ignore_ascii_case(".git") {
+                continue;
+            }
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| format!("检查搜索路径失败：{error}"))?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                let skip_heavy_directory = matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "target" | "node_modules" | ".venv" | "venv" | "dist" | "build"
+                );
+                if skip_heavy_directory || depth >= MAX_LIST_DEPTH {
+                    state.truncated = true;
+                } else {
+                    visit(root, &path, depth + 1, state)?;
+                }
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            state.files_seen += 1;
+            if metadata.len() > MAX_TEXT_BYTES {
+                state.files_skipped += 1;
+                continue;
+            }
+            if metadata.len() > MAX_SEARCH_TOTAL_BYTES - state.bytes_searched {
+                state.truncated = true;
+                return Ok(());
+            }
+            let remaining_bytes = MAX_SEARCH_TOTAL_BYTES - state.bytes_searched;
+            let read_limit = MAX_TEXT_BYTES.min(remaining_bytes).saturating_add(1);
+            let mut data = Vec::with_capacity(metadata.len() as usize);
+            fs::File::open(&path)
+                .and_then(|file| file.take(read_limit).read_to_end(&mut data))
+                .map_err(|error| format!("读取搜索文件 {} 失败：{error}", path.display()))?;
+            if data.len() as u64 > remaining_bytes {
+                state.truncated = true;
+                return Ok(());
+            }
+            state.bytes_searched = state.bytes_searched.saturating_add(data.len() as u64);
+            if data.len() as u64 > MAX_TEXT_BYTES {
+                state.files_skipped += 1;
+                continue;
+            }
+            if data.contains(&0) {
+                state.files_skipped += 1;
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(&data) else {
+                state.files_skipped += 1;
+                continue;
+            };
+            state.files_searched += 1;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| "搜索路径超出所选工作文件夹".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (index, line) in text.lines().enumerate() {
+                let found = if state.case_sensitive {
+                    line.contains(state.query)
+                } else {
+                    line.to_lowercase().contains(&state.folded_query)
+                };
+                if !found {
+                    continue;
+                }
+                let mut end = line.len().min(MAX_SEARCH_PREVIEW_BYTES);
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let mut preview = line[..end].to_string();
+                if end < line.len() {
+                    preview.push_str("…");
+                }
+                state.matches.push(SearchMatch {
+                    path: relative.clone(),
+                    line_number: index + 1,
+                    line: preview,
+                });
+                if state.matches.len() >= MAX_SEARCH_MATCHES {
+                    state.truncated = true;
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut state = SearchState {
+        query,
+        folded_query: query.to_lowercase(),
+        case_sensitive,
+        matches: Vec::new(),
+        files_seen: 0,
+        files_searched: 0,
+        files_skipped: 0,
+        entries_seen: 0,
+        bytes_searched: 0,
+        truncated: false,
+    };
+    visit(&root, &directory, 0, &mut state)?;
+    Ok(SearchOutcome {
+        matches: state.matches,
+        files_searched: state.files_searched,
+        files_skipped: state.files_skipped,
+        truncated: state.truncated,
+    })
 }
 
 pub fn read_file(workspace: &str, relative_path: &str) -> Result<String, String> {
@@ -440,7 +646,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 mod tests {
     use super::{
         capture_stream, collect_stream, delete_file, list_files, read_file, run_command,
-        write_file, MAX_TOOL_OUTPUT_BYTES,
+        search_files, write_file, MAX_SEARCH_FILES, MAX_SEARCH_MATCHES, MAX_TOOL_OUTPUT_BYTES,
     };
     use std::{fs, io::Cursor, path::Path};
     use tempfile::tempdir;
@@ -503,6 +709,126 @@ mod tests {
         assert!(entries.iter().any(|entry| entry.path == "folder"));
         assert!(entries.iter().all(|entry| !entry.path.contains(".git")));
         assert!(delete_file(&root, "folder").is_err());
+    }
+
+    #[test]
+    fn search_is_case_insensitive_by_default_and_honors_its_start_directory() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::create_dir(workspace.join("src")).unwrap();
+        fs::create_dir(workspace.join("docs")).unwrap();
+        fs::write(
+            workspace.join("src/main.rs"),
+            "fn main() {}\nTODO: Fix this\n",
+        )
+        .unwrap();
+        fs::write(workspace.join("docs/readme.md"), "todo: document this\n").unwrap();
+        let root = workspace.to_string_lossy();
+
+        let results = search_files(&root, "src", "todo", false).unwrap();
+        assert_eq!(results.files_searched, 1);
+        assert_eq!(results.matches.len(), 1);
+        assert_eq!(results.matches[0].path, "src/main.rs");
+        assert_eq!(results.matches[0].line_number, 2);
+        assert!(results.matches[0].line.contains("TODO"));
+        assert!(search_files(&root, "src", "todo", true)
+            .unwrap()
+            .matches
+            .is_empty());
+    }
+
+    #[test]
+    fn search_rejects_parent_paths_and_skips_git_metadata_and_binary_files() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::create_dir(workspace.join(".git")).unwrap();
+        fs::write(workspace.join(".git/config"), "needle in git").unwrap();
+        fs::write(workspace.join("binary.dat"), b"needle\0secret").unwrap();
+        let root = workspace.to_string_lossy();
+
+        assert!(search_files(&root, "../", "needle", false).is_err());
+        let results = search_files(&root, ".", "needle", false).unwrap();
+        assert!(results.matches.is_empty());
+        assert_eq!(results.files_skipped, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_skips_symlink_directories_and_treats_query_as_literal_text() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "needle").unwrap();
+        symlink(&outside, workspace.join("linked")).unwrap();
+        fs::write(workspace.join("patterns.txt"), "a.*b\naxb\n").unwrap();
+        let root = workspace.to_string_lossy();
+
+        assert!(search_files(&root, "linked", "needle", false).is_err());
+        let result = search_files(&root, ".", "a.*b", false).unwrap();
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].path, "patterns.txt");
+    }
+
+    #[test]
+    fn search_limits_match_count_and_marks_the_result_as_truncated() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let contents = std::iter::repeat_n("match", MAX_SEARCH_MATCHES + 5)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(workspace.join("many.txt"), contents).unwrap();
+        let root = workspace.to_string_lossy();
+
+        let results = search_files(&root, ".", "match", false).unwrap();
+        assert_eq!(results.matches.len(), MAX_SEARCH_MATCHES);
+        assert!(results.truncated);
+    }
+
+    #[test]
+    fn search_limits_files_and_marks_skipped_build_directories_incomplete() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        for index in 0..=MAX_SEARCH_FILES {
+            fs::write(workspace.join(format!("file-{index:04}.txt")), "no hit").unwrap();
+        }
+        let root = workspace.to_string_lossy();
+
+        let results = search_files(&root, ".", "not-found", false).unwrap();
+        assert_eq!(results.files_searched, MAX_SEARCH_FILES);
+        assert!(results.truncated);
+
+        let project_dir = workspace.join("small-project");
+        fs::create_dir(&project_dir).unwrap();
+        let build_dir = project_dir.join("target");
+        fs::create_dir(&build_dir).unwrap();
+        fs::write(build_dir.join("generated.txt"), "needle").unwrap();
+        let build_results = search_files(&root, "small-project/target", "needle", false).unwrap();
+        assert_eq!(build_results.matches.len(), 1);
+        let workspace_results = search_files(&root, "small-project", "needle", false).unwrap();
+        assert!(workspace_results.matches.is_empty());
+        assert!(workspace_results.truncated);
+    }
+
+    #[test]
+    fn search_skips_files_larger_than_one_mib_and_truncates_long_previews() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::write(workspace.join("large.txt"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+        fs::write(
+            workspace.join("line.txt"),
+            format!("match{}", "x".repeat(500)),
+        )
+        .unwrap();
+        let root = workspace.to_string_lossy();
+
+        let results = search_files(&root, ".", "match", false).unwrap();
+        assert_eq!(results.files_skipped, 1);
+        assert_eq!(results.matches.len(), 1);
+        assert!(results.matches[0].line.ends_with('…'));
+        assert!(results.matches[0].line.len() <= 243);
     }
 
     #[cfg(unix)]

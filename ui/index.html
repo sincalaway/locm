@@ -186,7 +186,7 @@
             <button class="button secondary agent-new-task" id="agent-new-task" type="button">＋ 新任务</button>
             <div class="agent-list-heading">任务 <span id="agent-task-count">0</span></div>
             <div id="agent-task-list" class="agent-task-list" role="list"></div>
-            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>文件读写只限所选文件夹。覆盖、删除和命令会在操作预览后再弹出系统原生确认；命令仍可能影响工作区外内容。</span></div>
+            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>文件读写与文本搜索只限所选文件夹；搜索有数量和大小上限，不读取 .git 或跟随符号链接。覆盖、删除和命令会在操作预览后再弹出系统原生确认；命令仍以当前用户权限运行，可能影响工作区外内容。</span></div>
           </aside>
           <section class="agent-workbench" aria-label="Agent 工作区">
             <header class="agent-toolbar">

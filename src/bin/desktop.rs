@@ -749,6 +749,20 @@ async fn agent_list_files(
 }
 
 #[tauri::command]
+async fn agent_search_files(
+    workspace: String,
+    relative_path: String,
+    query: String,
+    case_sensitive: bool,
+) -> Result<agent_workspace::SearchOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_workspace::search_files(&workspace, &relative_path, &query, case_sensitive)
+    })
+    .await
+    .map_err(|error| format!("搜索工作区文本任务失败：{error}"))?
+}
+
+#[tauri::command]
 async fn agent_read_file(workspace: String, relative_path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         agent_workspace::read_file(&workspace, &relative_path)
@@ -1724,6 +1738,7 @@ fn main() {
             open_creations_directory,
             agent_workspace_path,
             agent_list_files,
+            agent_search_files,
             agent_read_file,
             agent_write_file,
             agent_delete_file,

@@ -17,7 +17,7 @@ src/
   engine_manager.rs        llama.cpp / stable-diffusion.cpp Release 查询、下载、校验、安全解包
   desktop_backend.rs       硬件/磁盘、设置、GGUF、Hugging Face、系统监测等桌面后端
   media_backend.rs         媒体模型下载、stable-diffusion.cpp CLI 生成/取消、输出校验及受限 PNG 预览
-  agent_workspace.rs       Agent 工作区文件操作与命令执行
+  agent_workspace.rs       Agent 工作区文件操作、限额文本搜索与命令执行
   schedule_backend.rs      应用内定时任务持久化、推送适配与执行循环
 ui/
   index.html               多页桌面 UI 与侧栏导航
@@ -82,7 +82,7 @@ flowchart LR
 | 引擎/模型 | 两个引擎独立管理；GGUF 导入与公开 HF 搜索/下载；媒体权重下载 | GPU 版自动选择、Safetensors 转 GGUF/量化、分片 GGUF 编排 |
 | 运行/对话 | 启停本地 llama-server、上下文/部分参数能力探测、多轮 SSE 流式聊天、文本附件、历史保存（Agent/定时任务仍是完整响应） | 实测 tok/s、图片/PDF 附件、代码文件导出、强制思考开关 |
 | 图像/视频 | 文生图和固定 33 帧 Wan 文生视频命令接线；取消、输出校验、PNG 作品预览/只读索引 | 图生图、生成进度、视频预览；没有用真实权重验证生成兼容性 |
-| Agent | 本机模型工具轮次；工作区文件读写；命令、覆盖、删除的预览及后端系统原生确认 | 与 LocModel 不完全等价；未实现 MCP、网页/浏览器工具或电脑操作；没有操作系统级进程沙箱，命令可访问工作区外资源 |
+| Agent | 本机模型工具轮次；工作区内列目录、读写及有上限的只读文本搜索；命令、覆盖、删除的预览及后端系统原生确认 | 与 LocModel 不完全等价；未实现 MCP、网页/浏览器工具或电脑操作；没有操作系统级进程沙箱，命令仍以当前用户权限访问资源 |
 | 定时/监测 | 应用内一次/小时/日/周/自定义间隔任务；可选的 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark 与通用 Webhook 发送适配器；CPU/内存/模型进程采样、最多自动重启 3 次并采用递增间隔 | 操作系统后台任务与系统通知；真实推送端点/送达未实测；QQ 仅支持通用 JSON Webhook，不是官方直连；完整持续守护 |
 | 设置/平台 | 中文及有限英语界面（导航、设置、版本检查）、模型/作品目录、外观、API 端口、公开 Release 版本检查、Tauri 桌面入口 | 完整多语言翻译、用户自定义品牌名设置、macOS 自动引擎安装、正式桌面安装包及全平台真机验证 |
 

@@ -51,6 +51,20 @@
   function serializedBytes(messages) {
     return utf8Bytes(JSON.stringify(messages));
   }
+  function collapseAssistantRuns(messages) {
+    const result = [];
+    for (const message of messages) {
+      if (message.role === "assistant" && result.at(-1)?.role === "assistant") {
+        // Older task records may contain consecutive assistant replies after a
+        // failed continuation. Keep the newest reply so local chat templates
+        // never receive an invalid assistant-only suffix.
+        result[result.length - 1] = message;
+      } else {
+        result.push(message);
+      }
+    }
+    return result;
+  }
   function retainHistory(turns, maxMessages = MAX_HISTORY_MESSAGES) {
     const messages = (Array.isArray(turns) ? turns : [])
       .filter((message) => message && ["user", "assistant"].includes(message.role));
@@ -65,8 +79,8 @@
   function buildMessages(systemPrompt, turns, maxBytes = contextBudget("auto").inputBytes) {
     const byteLimit = Math.max(0, Math.floor(Number(maxBytes) || 0));
     const systemMessage = { role: "system", content: String(systemPrompt ?? "") };
-    const sourceHistory = (Array.isArray(turns) ? turns : [])
-      .filter((message) => message && ["user", "assistant"].includes(message.role));
+    const sourceHistory = collapseAssistantRuns((Array.isArray(turns) ? turns : [])
+      .filter((message) => message && ["user", "assistant"].includes(message.role)));
     const retainedHistory = retainHistory(sourceHistory);
     const history = retainedHistory
       .map((message) => ({
@@ -77,7 +91,10 @@
     if (sourceHistory.length === retainedHistory.length && serializedBytes(complete) <= byteLimit) return complete;
     const firstUserIndex = history.findIndex((message) => message.role === "user");
     const firstUser = firstUserIndex >= 0 ? { ...history[firstUserIndex] } : null;
-    const note = { role: "assistant", content: OMITTED_HISTORY_NOTE };
+    // This is application-supplied context metadata, not a model reply.
+    // A user-role note also avoids creating two consecutive assistant messages
+    // when the newest retained history item is an assistant reply.
+    const note = { role: "user", content: OMITTED_HISTORY_NOTE };
     const base = () => [systemMessage, ...(firstUser ? [firstUser] : []), note];
     // The initial user request is the task's anchor. If it alone leaves no room,
     // shorten only that copy in this model request; the saved task history is untouched.

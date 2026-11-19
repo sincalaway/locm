@@ -72,7 +72,7 @@ cargo run --features desktop --bin local-engine-manager
 cargo build --locked --release --features desktop --bin local-engine-manager
 ```
 
-当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。本次 Linux x86_64 Tauri release 桌面程序已成功构建。Windows x64 GNU GUI EXE 已从 Linux 交叉构建，测试包包含需与 EXE 同目录的 `WebView2Loader.dll`；Windows 还需要 WebView2 Runtime。Windows 未在真实 Windows 设备启动验证。
+当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。v0.2.9 的 Linux x86_64 Tauri release 桌面程序已原生构建；Windows x64 GNU GUI EXE 通过 Linux 交叉构建，测试包包含需与 EXE 同目录的 `WebView2Loader.dll`。Windows 还需要 WebView2 Runtime，且本版 Windows 包未在真实 Windows 设备启动验证。
 
 **尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。v0.2.7 包含 Agent 问候/身份/能力问题的直接答复，以及本地模型健康检查和网络/HTTP 错误诊断改进；本版验证结果和平台限制见上方更新说明及[部署与运行手册](docs/DEPLOYMENT.md)。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 

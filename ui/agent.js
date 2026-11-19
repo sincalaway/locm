@@ -1,9 +1,12 @@
 (() => {
   const invoke = window.__TAURI__?.core?.invoke;
   const Execution = window.LocmAgentExecution;
+  const Protocol = window.LocmAgentProtocol;
+  const WorkspaceState = window.LocmAgentWorkspace;
   const TASKS_KEY = "locm-agent-tasks-v1";
   const WORKSPACE_KEY = "locm-agent-workspace-v1";
   const CURRENT_TASK_KEY = "locm-agent-current-task-v1";
+  const CONTINUATION_RULE = "同一轮收到以“【LocM 应用内部继续指令；不是用户新请求】”开头的消息时，计划已经展示；不要重复或重写计划，应直接按已展示计划继续执行或总结。";
   const MAX_TASKS = 40;
   const MAX_TURNS = 50;
   const MAX_TOOL_TEXT_BYTES = 24000;
@@ -61,7 +64,7 @@
         task.needsPlan = task.needsPlan === true;
         task.plan = Array.isArray(task.plan) ? task.plan.filter((step) => typeof step === "string").slice(0, 12) : [];
         task.turns = task.turns.filter((message) => message && ["user", "assistant"].includes(message.role) && typeof message.content === "string").slice(-MAX_TURNS);
-        task.entries = task.entries.filter((entry) => entry && typeof entry === "object" && typeof entry.text === "string" && ["user", "assistant", "tool", "status"].includes(entry.kind)).slice(-120);
+        task.entries = Protocol.removeDuplicatePlanEntries(task.entries.filter((entry) => entry && typeof entry === "object" && typeof entry.text === "string" && ["user", "assistant", "tool", "status"].includes(entry.kind)).slice(-120));
         const pending = task.pendingAction;
         task.pendingAction = pending?.kind === "delete" && typeof pending.path === "string"
           ? pending
@@ -145,6 +148,7 @@
   function renderToolbar() {
     const modelButton = $("#agent-model-button");
     const label = $("#agent-model-label");
+    const workspaceContextLabel = $("#agent-workspace-context-label");
     const workspaceLabel = $("#agent-workspace-label");
     const workspaceDefaultLabel = $("#agent-workspace-default-label");
     if (state.runtime.running) {
@@ -154,14 +158,14 @@
       label.textContent = "本地模型：还没有启动";
       modelButton.classList.remove("running");
     }
-    const path = currentWorkspace();
-    workspaceLabel.textContent = path || "尚未选择";
-    workspaceLabel.title = path || "选择工作文件夹后即可开始任务";
     const task = activeTask();
-    const hasDifferentDefault = Boolean(task?.workspace && state.workspace && task.workspace !== state.workspace);
-    workspaceDefaultLabel.hidden = !hasDifferentDefault;
-    workspaceDefaultLabel.textContent = hasDifferentDefault ? `新任务默认：${state.workspace}` : "";
-    workspaceDefaultLabel.title = hasDifferentDefault ? state.workspace : "";
+    const workspaceView = WorkspaceState.displayState(task, state.workspace);
+    workspaceContextLabel.textContent = workspaceView.primaryLabel;
+    workspaceLabel.textContent = workspaceView.primaryPath;
+    workspaceLabel.title = workspaceView.primaryPath === "尚未选择" ? "选择工作文件夹后即可开始任务" : workspaceView.primaryPath;
+    workspaceDefaultLabel.hidden = !workspaceView.showSecondary;
+    workspaceDefaultLabel.textContent = workspaceView.secondaryText;
+    workspaceDefaultLabel.title = workspaceView.secondaryText;
     $("#agent-model-button").title = state.runtime.running ? "前往运行页面管理本地模型" : "本地模型尚未启动；点击前往运行页面";
   }
 
@@ -371,9 +375,12 @@
     const recoveryLocked = task?.execution?.recovery?.mode === "plan_only";
     const input = $("#agent-input");
     const button = $("#agent-send");
-    input.placeholder = !state.runtime.running || !currentWorkspace()
-      ? "可直接问候或问我是谁；工作区任务需启动模型并选择文件夹"
-      : "描述你想完成的任务…（Enter 发送，Shift+Enter 换行）";
+    const workspaceMismatch = Boolean(task?.workspace && state.workspace && task.workspace !== state.workspace);
+    input.placeholder = workspaceMismatch
+      ? "当前任务仍绑定旧目录；要使用新默认目录，请先点“新任务”"
+      : !state.runtime.running || !currentWorkspace()
+        ? "可直接问候或问我是谁；工作区任务需启动模型并选择文件夹"
+        : "描述你想完成的任务…（Enter 发送，Shift+Enter 换行）";
     input.disabled = busy || pending || recoveryLocked;
     button.disabled = busy || pending || recoveryLocked || !input.value.trim() && !state.attachments.length;
     $("#agent-attach").disabled = busy || pending || recoveryLocked;
@@ -450,30 +457,36 @@
     throw new Error(`模型请求了未开放的工具：${name || "（空名称）"}`);
   }
 
-  function processPlanResponse(task, raw, parsed) {
+  function processPlanResponse(task, raw, parsed, options = {}) {
     if (parsed.type === "plan") {
-      const steps = Array.isArray(parsed.steps)
-        ? parsed.steps.filter((step) => typeof step === "string").map((step) => step.trim()).filter(Boolean).slice(0, 12)
-        : [];
-      if (!steps.length || steps.length !== parsed.steps.length || steps.some((step) => bytes(step).length > 500)) {
+      const recorded = Protocol.recordPlanResponse(task, truncate(raw, 26000), parsed, {
+        allowReplan: options.allowReplan === true,
+        continueAfterPlan: options.continueAfterPlan === true,
+      });
+      if (recorded.status === "duplicate") {
+        addToolResult(task, "已展示的计划保持不变；模型重复返回了计划，未重复展示，也没有执行工具。请检查现有计划后再发出新的明确指示。 ");
+        addEntry(task, "status", "模型在同一轮重复返回计划；任务已暂停，所有工具操作均未执行。 ");
+        task.status = "paused";
+        persist();
+        return "duplicate";
+      }
+      if (recorded.status === "invalid") {
         task.turns.push({ role: "assistant", content: truncate(raw, 26000) });
         addToolResult(task, "计划格式无效。请先用 {\"type\":\"plan\",\"steps\":[\"...\"]} 给出 1 至 12 个非空步骤，每步不超过 500 字节；工具操作尚未执行。");
         addEntry(task, "status", "计划格式无效；尚未执行任何工具操作。正在请求模型重新生成计划。");
-        return true;
+        return "handled";
       }
-      task.plan = steps;
-      task.needsPlan = false;
-      task.turns.push({ role: "assistant", content: JSON.stringify({ type: "plan", steps }) });
+      const steps = recorded.steps;
       addEntry(task, "assistant", `执行计划（${steps.length} 步）：\n${steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}\n\n我会逐步执行；每个工具操作都会显示进度，命令、覆盖和删除会先等待确认。`);
-      return true;
+      return "handled";
     }
     if (task.needsPlan) {
       task.turns.push({ role: "assistant", content: truncate(raw, 26000) });
       addToolResult(task, "在执行任何工具操作或宣布完成前，必须先展示 JSON 计划：{\"type\":\"plan\",\"steps\":[\"步骤一\",\"步骤二\"]}。刚才的工具请求尚未执行。");
       addEntry(task, "status", "计划尚未展示；刚才的工具请求没有执行。正在要求模型先生成计划。");
-      return true;
+      return "handled";
     }
-    return false;
+    return "not_plan";
   }
 
   async function requestModel(task, systemPrompt = SYSTEM_PROMPT) {
@@ -488,8 +501,9 @@
       const runtime = await invoke("runtime_status");
       const contextPreference = runtime?.running ? runtime.context : "auto";
       const budget = LocmAgentContext.contextBudget(contextPreference);
+      const effectivePrompt = systemPrompt === SYSTEM_PROMPT ? `${systemPrompt}\n\n${CONTINUATION_RULE}` : systemPrompt;
       const raw = await invoke("chat_complete", {
-        messages: LocmAgentContext.buildMessages(systemPrompt, task.turns, budget.inputBytes),
+        messages: LocmAgentContext.buildMessages(effectivePrompt, task.turns, budget.inputBytes),
         temperature: 0.2,
         maxTokens: budget.replyTokens,
       });
@@ -664,7 +678,12 @@
           persist();
           return;
         }
-        if (processPlanResponse(task, raw, parsed)) {
+        const planHandling = processPlanResponse(task, raw, parsed, { continueAfterPlan: true });
+        if (planHandling === "duplicate") {
+          render();
+          return;
+        }
+        if (planHandling === "handled") {
           render();
           continue;
         }
@@ -680,6 +699,7 @@
           const message = String(parsed.message || "");
           rememberModelAction(task, raw, parsed);
           addEntry(task, "assistant", message || "Agent 正在处理任务。");
+          Protocol.appendContinuation(task, "请继续执行当前已展示的计划；不要重复计划。若需要文件操作，调用对应工具；若已完成，直接总结。");
           continue;
         }
         let action;
@@ -851,7 +871,9 @@
         task.status = "paused";
         return;
       }
-      if (processPlanResponse(task, raw, parsed)) {
+      const planHandling = processPlanResponse(task, raw, parsed, { continueAfterPlan: true });
+      if (planHandling === "duplicate") return;
+      if (planHandling === "handled") {
         render();
         continue;
       }
@@ -865,6 +887,7 @@
       if (parsed.type === "message") {
         rememberModelAction(task, raw, parsed);
         addEntry(task, "assistant", String(parsed.message || "Agent 正在继续处理。"));
+        Protocol.appendContinuation(task, "请继续执行当前已展示的计划；不要重复计划。若需要文件操作，调用对应工具；若已完成，直接总结。");
         continue;
       }
       let action;
@@ -929,7 +952,7 @@
           addEntry(task, "status", "恢复计划格式无效；未执行任何工具。可以再次点击恢复按钮重试模型计划。");
           return;
         }
-        processPlanResponse(task, raw, parsed);
+        processPlanResponse(task, raw, parsed, { allowReplan: true });
       } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.type === "tool_call") {
         rememberModelAction(task, raw, parsed);
         addToolResult(task, "恢复模式只生成计划；模型提出的工具请求没有执行。上次中断工具结果仍未知，请先检查工作区或相关进程，不要自动重跑。");
@@ -962,7 +985,7 @@
     const task = {
       id: newId(),
       title: prompt.replace(/\s+/g, " ").slice(0, 54) || "新任务",
-      workspace: state.workspace,
+      workspace: WorkspaceState.workspaceForNewTask(state.workspace),
       status: "running",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -1038,15 +1061,17 @@
       const selected = await invoke("choose_directory");
       if (!selected) return;
       const canonical = await invoke("agent_workspace_path", { workspace: selected });
-      state.workspace = canonical;
       const task = activeTask();
-      if (task && !task.entries.length && !task.pendingAction) task.workspace = canonical;
+      const selection = WorkspaceState.applySelection(task, canonical);
+      state.workspace = selection.defaultWorkspace;
+      if (task && selection.updateTaskWorkspace) task.workspace = selection.taskWorkspace;
       persist();
       renderToolbar();
-      const needsNewTask = Boolean(task?.entries.length && task.workspace !== canonical);
+      updateComposerState();
+      const needsNewTask = Boolean(task?.workspace && task.workspace !== canonical);
       notify(needsNewTask
-        ? "工作文件夹已更换为新任务默认目录；当前任务仍使用原目录。点击“新任务”后即可使用新文件夹。"
-        : "工作文件夹已选择；新建的任务将使用该目录。已有任务保持原目录。");
+        ? `新任务默认目录已设为：${canonical}。当前任务仍绑定：${task.workspace}。点击“新任务”后即可在新目录开始任务。`
+        : `新任务默认目录已设为：${canonical}。已有任务仍使用各自绑定的目录。`);
     } catch (error) { notify(`选择工作文件夹失败：${error}`, true); }
   }
 

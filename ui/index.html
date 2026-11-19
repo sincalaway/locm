@@ -13,6 +13,8 @@
   <script src="./agent_execution.js" defer></script>
   <script src="./agent_context.js" defer></script>
   <script src="./agent_intent.js" defer></script>
+  <script src="./agent_protocol.js" defer></script>
+  <script src="./agent_workspace_state.js" defer></script>
   <script src="./agent.js" defer></script>
 </head>
 <body data-page="overview">
@@ -32,7 +34,7 @@
         <a class="nav-item" href="#monitor" data-page="monitor"><span>⌁</span>监测</a>
         <a class="nav-item" href="#settings" data-page="settings"><span>☷</span>设置</a>
       </nav>
-      <div class="sidebar-bottom"><div class="local-note"><i></i><div><strong>本地优先</strong><small>聊天内容留在此设备</small></div></div><small class="version">LocM · v0.2.8</small></div>
+      <div class="sidebar-bottom"><div class="local-note"><i></i><div><strong>本地优先</strong><small>聊天内容留在此设备</small></div></div><small class="version">LocM · v0.2.9</small></div>
     </aside>
 
     <main class="main-content">
@@ -195,7 +197,7 @@
           <section class="agent-workbench" aria-label="Agent 工作区">
             <header class="agent-toolbar">
               <button class="agent-model-button" id="agent-model-button" type="button" title="前往运行页面管理模型"><i id="agent-model-dot"></i><span id="agent-model-label">本地模型：检查中</span><b>⌄</b></button>
-              <div class="agent-workspace-picker"><span>工作文件夹</span><div class="agent-workspace-paths"><strong id="agent-workspace-label">尚未选择</strong><small id="agent-workspace-default-label" hidden></small></div><button class="button secondary" id="agent-choose-workspace" type="button" title="更换新任务默认工作文件夹；已有任务仍使用原目录">更换</button></div>
+              <div class="agent-workspace-picker"><div class="agent-workspace-context"><span id="agent-workspace-context-label">新任务默认工作区</span><div class="agent-workspace-paths"><strong id="agent-workspace-label">尚未选择</strong><small id="agent-workspace-default-label" hidden></small></div></div><button class="button secondary" id="agent-choose-workspace" type="button" title="更换新任务默认目录；不会更改当前或历史任务绑定的目录">更换默认</button></div>
             </header>
             <div class="agent-stage">
               <div id="agent-welcome" class="agent-welcome">

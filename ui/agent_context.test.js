@@ -88,3 +88,30 @@ test("truncates oversized UTF-8 messages without splitting a code point", () => 
   assert.ok(content.endsWith("…（消息过长，已截断）"));
   assert.ok(!content.includes("\uFFFD"));
 });
+
+test("repairs legacy consecutive assistant replies by retaining the newest one", () => {
+  const turns = [
+    { role: "user", content: "检查并修复项目" },
+    { role: "assistant", content: '{"type":"plan","steps":["旧计划"]}' },
+    { role: "assistant", content: '{"type":"plan","steps":["重复计划"]}' },
+    { role: "assistant", content: '{"type":"plan","steps":["最新计划"]}' },
+  ];
+  const messages = buildMessages("system", turns, 12_000);
+
+  assert.deepEqual(messages.map(({ role }) => role), ["system", "user", "assistant"]);
+  assert.match(messages.at(-1).content, /最新计划/);
+  assert.ok(!messages.at(-1).content.includes("旧计划"));
+});
+
+test("an omission note cannot create two assistant messages at the end of a clipped history", () => {
+  const messages = buildMessages("system", [
+    { role: "user", content: "任务目标" },
+    { role: "assistant", content: "回复".repeat(8_000) },
+  ], 1_000);
+  const trailingAssistantCount = messages.slice().reverse().findIndex(({ role }) => role !== "assistant");
+
+  assert.ok(serializedBytes(messages) <= 1_000);
+  assert.equal(messages[0].role, "system");
+  assert.ok(trailingAssistantCount === 0 || trailingAssistantCount === 1);
+  assert.ok(messages.some((message) => message.content.includes("较早的对话或工具结果已省略")));
+});

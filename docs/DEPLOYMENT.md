@@ -9,7 +9,7 @@ v0.2.11 发布包含 Linux x86_64 便携桌面包、真正的 Windows x64 NSIS �
 | 平台 | Release 文件 | 类型与主要内容 |
 | --- | --- | --- |
 | Linux x86_64 | `locm-0.2.11-linux-x86_64.tar.gz` | `linux-x86_64/local-engine-manager`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
-| Windows x64 | `locm-0.2.11-windows-x64-nsis-setup.exe` | 带安装向导的 NSIS 安装程序，内含 Windows x64 应用文件与 `WebView2Loader.dll` |
+| Windows x64 | `locm-0.2.11-windows-x64-nsis-setup.exe` | 带安装向导的 NSIS 安装程序，内含 Windows x64 应用 EXE；本版 NSIS 清单未单独列出 `WebView2Loader.dll` |
 | Windows x64 GNU | `locm-0.2.11-windows-x64-gnu-portable-test.zip` | 手动解压运行的交叉构建测试包；含 `local-engine-manager.exe`、同目录 `WebView2Loader.dll`、`LICENSE`、说明和图标 |
 
 以上名称对应 v0.2.11 GitHub Release 资产。Linux 包为 Linux 原生构建；Windows NSIS 安装器从 Linux 使用 Tauri 官方文档所述的 `cargo-xwin` 与 `x86_64-pc-windows-msvc` 目标交叉构建；GNU 便携包由维护中的 `scripts/build-windows-gnu.sh` 构建。两个 Windows 包均未在真实 Windows 设备启动验证，不能把交叉构建当作实机测试。
@@ -17,10 +17,10 @@ v0.2.11 发布包含 Linux x86_64 便携桌面包、真正的 Windows x64 NSIS �
 ## Windows x64
 
 1. 确认系统为 64 位 Windows。应用运行仍需要 Microsoft Edge WebView2 Runtime。此 NSIS 安装器配置为：如果 Runtime 缺失，就联网下载并运行微软 WebView2 Bootstrapper；首次安装因此需要互联网连接。若电脑离线，可先从 [Microsoft 官方 WebView2 Runtime 页面](https://developer.microsoft.com/en-us/microsoft-edge/webview2)下载并安装 Evergreen Standalone Runtime。
-2. 双击 `locm-0.2.11-windows-x64-nsis-setup.exe` 并按安装向导操作。安装器会部署应用文件和 `WebView2Loader.dll`；DLL 只负责连接 Runtime，本身不包含浏览器运行环境。
+2. 双击 `locm-0.2.11-windows-x64-nsis-setup.exe` 并按安装向导操作。安装器会部署 Windows x64 应用。静态检查本版 NSIS 安装器内容时，没有发现单独的 `WebView2Loader.dll`。
 3. 从安装器创建的入口启动应用。安装包不包含模型、推理引擎或模型权重，也不会自动下载这些大型文件。
 
-WebView2 Runtime 是负责显示应用界面的浏览器运行时；安装器可在有网络时启动微软 Bootstrapper 来获取 Runtime，但应用运行仍依赖 Runtime。包内的 `WebView2Loader.dll` 只是连接 Runtime 的加载库，不能代替 Runtime，也不包含完整 Edge 浏览器运行环境。
+WebView2 Runtime 是负责显示应用界面的浏览器运行时；本版应用运行仍以它为前提，NSIS 配置会在缺少 Runtime 时联网启动微软 Bootstrapper。Windows GNU 便携 ZIP 会附带 `WebView2Loader.dll`；它只是加载库，不是 Runtime，也不包含完整 Edge 浏览器运行环境。NSIS 安装器清单中没有单独的 Loader DLL。
 
 ### Windows x64 GNU 便携测试包
 

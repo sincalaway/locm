@@ -490,8 +490,7 @@
     const engineBusy = state.engineInstallBusy.has("chat");
     const engineAction = $("#quickstep-engine-action");
     if (engineAction) {
-      engineAction.disabled = engineBusy || (!engineReady && (!state.enginesLoaded || !state.mediaInstallSupported));
-      engineAction.textContent = engineBusy ? "安装中…" : !state.enginesLoaded ? "读取状态…" : engineReady ? "管理引擎" : state.mediaInstallSupported ? "一键安装" : "暂不可安装";
+      engineAction.textContent = engineBusy ? "查看安装进度" : "查看引擎管理";
     }
     const activeStep = !hardwareReady ? "hardware" : !engineReady ? "engine" : modelCount === 0 ? "models" : null;
     const updateStep = (name, complete, message) => {
@@ -551,11 +550,8 @@
       state.mediaInstallSupported = await invoke("engine_install_supported");
       const supported = state.mediaInstallSupported;
       const engines = statuses.map((status) => ({ engine: status.engine }));
-      $("#engine-cards").innerHTML = engines.map((engine) => engineCardMarkup(engine, state.engines.get(engine.engine))).join("");
       $("#overview-engines").innerHTML = engines.map((engine) => engineCardMarkup(engine, state.engines.get(engine.engine))).join("");
-      [$("#engine-cards"), $("#overview-engines")].forEach((container) => {
-        $$(".engine-card", container).forEach((card) => wireEngineCard(card, supported));
-      });
+      $$(".engine-card", $("#overview-engines")).forEach((card) => wireEngineCard(card, supported));
       if (!supported) {
         $$(".engine-card").forEach((card) => {
           const button = $("[data-engine-action=install]", card);
@@ -568,7 +564,7 @@
       updateQuickstart();
     } catch (error) {
       state.enginesLoaded = true;
-      [$("#engine-cards"), $("#overview-engines")].forEach((box) => { box.innerHTML = `<div class="error-box">无法读取引擎状态：${escapeText(error)}</div>`; });
+      $("#overview-engines").innerHTML = `<div class="error-box">无法读取引擎状态：${escapeText(error)}</div>`;
       renderMediaEngineBanners(String(error));
       renderMediaLibraryEngine(String(error));
       updateQuickstart();
@@ -601,8 +597,7 @@
         description.textContent = "画图和视频共用 stable-diffusion.cpp 官方 CPU x64 引擎；安装不会下载模型权重。GPU 版本未接入此安装器。";
         install.hidden = false;
         manage.hidden = true;
-        install.disabled = !known || !state.mediaInstallSupported || state.mediaInstallBusy;
-        install.textContent = !known ? "无法读取引擎状态" : (!state.mediaInstallSupported ? "此平台暂不支持安装" : (state.mediaInstallBusy ? "正在安装…" : "一键安装"));
+        install.textContent = state.mediaInstallBusy ? "查看安装进度" : known && state.mediaInstallSupported ? "前往概览安装" : "前往概览管理";
       }
     });
   }
@@ -787,7 +782,7 @@
       const installed = state.engines.get("stable-diffusion.cpp")?.installedVersions || [];
       const upToDate = installed.some((version) => version.tag === latest.tag);
       latestBox.textContent = upToDate
-        ? `官方最新版本 ${latest.tag} · 本机已安装；如需更新请前往“版本管理”。`
+        ? `官方最新版本 ${latest.tag} · 本机已安装；如需更新请前往概览的引擎管理。`
         : `官方最新版本：${latest.tag} · 本机版本：${installed.map((version) => version.tag).join("、") || "未安装"} · 不会自动安装。`;
     } catch (error) { latestBox.textContent = `版本查询失败：${error}`; }
     finally { button.disabled = false; }
@@ -915,10 +910,6 @@
       await loadEngines();
       if (engine === "chat") await loadRunCapabilities(true);
     }
-  }
-
-  async function installMediaEngine() {
-    return installEngineFromLatest("media");
   }
 
   function wireEngineCard(card, installSupported) {
@@ -2584,15 +2575,14 @@
   window.addEventListener("resize", () => { if ($("#page-monitor").classList.contains("active")) drawChart(); });
   $("#refresh-hardware").addEventListener("click", loadHardware);
   $("#quickstep-refresh-hardware").addEventListener("click", loadHardware);
-  $("#quickstep-engine-action").addEventListener("click", () => {
-    if (state.engines.get("llama.cpp")?.installedVersions?.length) { location.hash = "#run"; return; }
-    void installEngineFromLatest("chat");
+  $("#quickstep-engine-action").addEventListener("click", (event) => {
+    event.preventDefault();
+    $("#overview-engines").scrollIntoView({ block: "start" });
   });
   $("#refresh-model-storage").addEventListener("click", refreshModelStorage);
   $("#overview-choose-model-dir").addEventListener("click", chooseOverviewModelDirectory);
   $("#overview-recommended-models").addEventListener("click", () => switchModelTab("recommended"));
   $("#overview-all-models").addEventListener("click", (event) => { event.preventDefault(); openHuggingFaceLibrary("all"); });
-  $("#refresh-engines").addEventListener("click", loadEngines);
   $("#pick-model").addEventListener("click", importLocalModel);
   $("#model-search-form").addEventListener("submit", searchHf);
   $$ ("[data-recommend-category]").forEach((button) => button.addEventListener("click", () => searchRecommendationModels(button.dataset.recommendCategory)));
@@ -2647,7 +2637,6 @@
   $("#choose-comfyui-directory").addEventListener("click", chooseComfyUiDirectory);
   $("#scan-comfyui-directory").addEventListener("click", () => scanComfyUiDirectory(state.settings?.comfyuiDirectory));
   $("#media-engine-check").addEventListener("click", checkMediaEngineVersion);
-  $$("[data-media-install]").forEach((button) => button.addEventListener("click", installMediaEngine));
   $("#start-model").addEventListener("click", startModel);
   $("#stop-model").addEventListener("click", stopModel);
   $("#run-model-select").addEventListener("change", () => { updateRunEstimates(); refreshRuntime(); });

@@ -39,7 +39,7 @@
         <div class="page-intro overview-intro"><div><div class="eyebrow">DEVICE OVERVIEW</div><h1>本机概览</h1><p class="intro-copy">硬件与模型磁盘空间来自本机检测；未取得的数据会显示为未知。</p></div><button class="button secondary" id="refresh-hardware" type="button">重新检测硬件</button></div>
       <section class="quick-start-steps" aria-label="本地模型快速开始">
         <article class="quick-start-step" data-quick-step="hardware"><span class="quick-step-number">1</span><div><strong>检测硬件</strong><small id="quickstep-hardware-status">正在读取本机信息…</small></div><button class="text-button" id="quickstep-refresh-hardware" type="button">重新检测</button></article>
-        <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>安装推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><button class="text-button" id="quickstep-engine-action" type="button" disabled>读取状态…</button></article>
+        <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>安装推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><a class="text-button" id="quickstep-engine-action" href="#overview-engines">查看引擎管理</a></article>
         <article class="quick-start-step" data-quick-step="models"><span class="quick-step-number">3</span><div><strong>准备模型</strong><small id="quickstep-model-status">正在读取本地模型…</small></div><a class="text-button" href="#models">打开模型库</a></article>
       </section>
         <section class="overview-device-card card" aria-labelledby="overview-headline">
@@ -88,7 +88,7 @@
         <div id="models-media" class="card model-info-panel" role="tabpanel" aria-labelledby="model-tab-media" tabindex="0" hidden>
           <div class="model-panel-heading"><div><h2>画图 / 视频模型管理</h2><p>下载已选 Hugging Face 仓库中的多个 Safetensors / GGUF 组件；已选 ComfyUI 权重只读扫描，不搬移、不改写。</p></div><a class="button secondary" href="#image">打开画图 / 视频</a></div>
           <section class="comfyui-library"><div><h3>LocModel 已下载媒体组件</h3><p class="muted">组件保存在当前模型目录下的 media 文件夹；每个仓库版本固定并逐文件校验 SHA-256。</p></div><div id="managed-media-model-list" class="comfyui-model-list"><div class="empty-state">正在读取本地媒体组件…</div></div><button class="button secondary" id="refresh-media-models" type="button">刷新组件列表</button></section>
-          <section class="media-library-engine"><div><strong>stable-diffusion.cpp 共用引擎</strong><p id="media-engine-status" class="muted">正在读取安装状态…</p><p id="media-engine-latest" class="muted tiny">尚未检查官方版本</p></div><div class="media-library-actions"><button class="button secondary" id="media-engine-check" type="button">检查更新</button><a class="button secondary" href="#run">版本管理</a></div></section>
+          <section class="media-library-engine"><div><strong>stable-diffusion.cpp 共用引擎</strong><p id="media-engine-status" class="muted">正在读取安装状态…</p><p id="media-engine-latest" class="muted tiny">尚未检查官方版本</p></div><div class="media-library-actions"><button class="button secondary" id="media-engine-check" type="button">检查更新</button><a class="button secondary" href="#overview">概览引擎管理</a></div></section>
           <section class="media-recommendations" aria-labelledby="media-recommendations-title"><div><h3 id="media-recommendations-title">官方兼容指南中的可选组合</h3><p class="muted">这些按钮只打开指定仓库并预选指南列出的权重；请先查看动态文件大小、SHA-256 与模型许可证，再明确点击下载。</p></div><div class="media-recommendation-grid"><article class="media-recommendation-card"><h4>Qwen Image 2.1 · 文生图</h4><p>INT8 主模型 + 匹配的 Qwen Image 2.1 VAE 与 Qwen3-VL INT8 编码器，共 3 个组件；生成页需把编码器类型设为 Qwen LLM。</p><button class="button secondary" id="prepare-qwen-image" type="button">预选官方指南组件</button><a href="https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/models/qwen_image_2.1.md" target="_blank" rel="noopener noreferrer">查看 stable-diffusion.cpp 指南 ↗</a></article><article class="media-recommendation-card"><h4>Stable Diffusion 1.5 · 入门图像</h4><p>官方示例中的单个 Safetensors 主模型，不需额外 VAE 或文本编码器；文件大小及 CreativeML OpenRAIL-M 许可以仓库显示为准。</p><button class="button secondary" id="prepare-sd15-image" type="button">预选官方示例模型</button><a href="https://github.com/leejet/stable-diffusion.cpp" target="_blank" rel="noopener noreferrer">查看上游示例 ↗</a></article><article class="media-recommendation-card"><h4>Wan2.1 T2V 1.3B · 33 帧视频</h4><p>官方指南列出的主模型、Wan VAE 与 UMT5 编码器，三个组件来自同一仓库。CPU 生成可能耗时很长，文件大小不是运行内存需求。</p><button class="button secondary" id="prepare-wan-video" type="button">预选 3 个视频组件</button><a href="https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/models/wan.md" target="_blank" rel="noopener noreferrer">查看 Wan 指南 ↗</a></article></div></section>
           <section class="comfyui-library"><div><h3>ComfyUI 模型文件夹（只读）</h3><p class="muted">选择 ComfyUI 根文件夹或其 models 文件夹。LocModel 只扫描常见子目录和权重扩展名，不复制、修改或删除原文件。</p></div><div class="comfyui-directory-row"><code id="comfyui-directory">尚未选择文件夹</code><div><button class="button secondary" id="choose-comfyui-directory" type="button">选择文件夹</button><button class="button secondary" id="scan-comfyui-directory" type="button" disabled>重新扫描</button></div></div><p id="comfyui-scan-status" class="muted tiny" aria-live="polite">未扫描</p><div id="comfyui-model-list" class="comfyui-model-list"><div class="empty-state">支持只读发现 checkpoints、diffusion_models、unet、loras、vae、text_encoders/clip、controlnet、embeddings 等常见目录。</div></div></section>
           <div class="notice"><strong>兼容性边界</strong><span>媒体下载器只管理所选 safetensors / GGUF 数据文件，不运行仓库脚本；下载到多个组件不代表它们彼此兼容，许可证和所需组件以模型卡及 stable-diffusion.cpp 官方模型指南为准。</span></div>
@@ -111,7 +111,7 @@
       </section>
 
       <section class="page" id="page-run" data-title="运行">
-        <div class="page-intro"><div><div class="eyebrow">RUNTIME CONTROL</div><h1>运行管理</h1><p class="intro-copy">选择本机已导入或下载的 GGUF 模型，再配置当前 llama-server 版本实际支持的选项。</p></div><button class="button secondary" id="refresh-engines">刷新引擎状态</button></div>
+        <div class="page-intro"><div><div class="eyebrow">RUNTIME CONTROL</div><h1>运行管理</h1><p class="intro-copy">选择本机已导入或下载的 GGUF 模型，再配置当前 llama-server 版本实际支持的选项。</p></div><a class="text-link" href="#overview">引擎安装与更新在概览管理 →</a></div>
         <div class="run-model-toolbar"><label class="sr-only" for="run-model-select">已安装模型</label><select id="run-model-select" aria-label="选择已安装模型"><option value="">选择已安装模型…</option></select><a class="button secondary" href="#models">管理模型</a></div>
         <div class="run-layout">
           <section class="card run-resource-card">
@@ -142,7 +142,6 @@
             <div id="run-status" class="muted small">模型未启动</div><div id="run-error" class="error-box" hidden></div>
           </section>
         </div>
-        <div class="section-heading"><div><h2>推理引擎</h2><p>对话模型与图像/视频引擎分别管理；此处按钮可检查或安装官方运行时。</p></div></div><div id="engine-cards" class="engine-grid"></div>
         <div class="notice"><strong>兼容提示</strong><span>运行页选项会在启动前与已安装 llama-server 的 --help 对照；不支持的项目会禁用或提示，不会传入虚构参数。</span></div>
       </section>
 
@@ -272,7 +271,7 @@
         </header>
         <section class="media-engine-banner" aria-live="polite">
           <div class="media-engine-copy"><div class="image-engine-heading"><div><div class="engine-kicker">SHARED MEDIA ENGINE</div><h2>stable-diffusion.cpp · CPU</h2></div><span class="status-pill empty" id="image-engine-status">读取中…</span></div><p id="image-engine-description">图像推理使用官方 sd-cli；当前 CPU x64 引擎不调用显卡。引擎与模型权重分别管理。</p><div class="image-engine-progress" id="image-engine-progress" hidden></div><div class="engine-error" id="image-engine-error" hidden></div></div>
-          <div class="media-engine-actions"><button class="button primary" id="image-install-engine" data-media-install type="button" disabled>读取引擎状态…</button><a class="button secondary" id="image-manage-engine" href="#run" hidden>已安装 · 管理引擎</a></div>
+          <div class="media-engine-actions"><a class="button primary" id="image-install-engine" href="#overview">前往概览管理</a><a class="button secondary" id="image-manage-engine" href="#overview" hidden>已安装 · 概览引擎管理</a></div>
         </section>
         <section class="card image-model-empty" id="image-model-guidance" aria-labelledby="image-model-empty-title"><div class="image-empty-mark" aria-hidden="true">▧</div><div class="image-empty-copy"><h2 id="image-model-empty-title">先选择一个本机模型</h2><p>可选已下载媒体组件或 ComfyUI 只读清单中的主模型。文件被识别不等于引擎保证兼容；需额外 VAE / 文本编码器时，请按模型卡补齐。</p><a href="#models" id="image-model-manager-link">管理媒体模型组件 →</a></div></section>
         <div class="image-workspace">
@@ -311,7 +310,7 @@
         </header>
         <section class="media-engine-banner" aria-live="polite">
           <div class="media-engine-copy"><div class="image-engine-heading"><div><div class="engine-kicker">WAN VIDEO · CPU ENGINE</div><h2>Wan 文生视频模式</h2></div><span class="status-pill empty" id="video-engine-status">读取中…</span></div><p id="video-engine-description">视频调用官方 `-M vid_gen` 模式和 Wan 组件；当前只有 CPU x64 引擎，不使用显卡。33 帧短片可能占用大量内存和时间，不能保证在本机完成。</p><div class="image-engine-progress" id="video-engine-progress" hidden></div><div class="engine-error" id="video-engine-error" hidden></div></div>
-          <div class="media-engine-actions"><button class="button primary" id="video-install-engine" data-media-install type="button" disabled>读取引擎状态…</button><a class="button secondary" id="video-manage-engine" href="#run" hidden>已安装 · 管理引擎</a></div>
+          <div class="media-engine-actions"><a class="button primary" id="video-install-engine" href="#overview">前往概览管理</a><a class="button secondary" id="video-manage-engine" href="#overview" hidden>已安装 · 概览引擎管理</a></div>
         </section>
         <div class="video-workspace" aria-label="Wan 文生视频工作区">
           <section class="card image-generation-form video-generation-form" aria-labelledby="video-model-empty-title">

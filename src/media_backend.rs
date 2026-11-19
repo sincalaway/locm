@@ -21,7 +21,11 @@ const MAX_MEDIA_BUNDLE_BYTES: u64 = 200 * 1024 * 1024 * 1024;
 const MIN_FREE_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MEDIA_FILE_BYTES: u64 = 150 * 1024 * 1024 * 1024;
 const MAX_PROMPT_BYTES: usize = 8 * 1024;
+const MAX_IMAGE_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_IMAGE_INDEX_ENTRIES: usize = 20_000;
+const MAX_IMAGE_INDEX_RESULTS: usize = 100;
 const STDERR_TAIL_BYTES: usize = 48 * 1024;
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static OUTPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -97,6 +101,121 @@ pub struct MediaGenerationRequest {
 pub struct MediaGenerationResult {
     pub output_path: String,
     pub kind: String,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImage {
+    pub path: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub modified_at_ms: u64,
+}
+
+pub fn list_generated_images(app: &AppHandle) -> Result<Vec<GeneratedImage>, String> {
+    let root = crate::desktop_backend::creations_directory(app, "image")?;
+    let entries = fs::read_dir(&root).map_err(|error| format!("读取作品目录失败：{error}"))?;
+    let mut images = Vec::new();
+    for entry in entries.take(MAX_IMAGE_INDEX_ENTRIES) {
+        let entry = entry.map_err(|error| format!("读取作品目录条目失败：{error}"))?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if !file_type.is_file()
+            || file_type.is_symlink()
+            || !entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        {
+            continue;
+        }
+        let path = entry
+            .path()
+            .canonicalize()
+            .map_err(|error| format!("无法确认作品路径：{error}"))?;
+        if path.parent() != Some(root.as_path()) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let modified_at_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        images.push(GeneratedImage {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            path: path.display().to_string(),
+            size_bytes: metadata.len(),
+            modified_at_ms,
+        });
+    }
+    images.sort_by(|left, right| {
+        right
+            .modified_at_ms
+            .cmp(&left.modified_at_ms)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    images.truncate(MAX_IMAGE_INDEX_RESULTS);
+    Ok(images)
+}
+
+pub fn preview_generated_image(app: &AppHandle, image_path: &str) -> Result<String, String> {
+    if image_path.is_empty() || image_path.len() > 16 * 1024 {
+        return Err("作品路径无效".to_string());
+    }
+    let supplied_path = PathBuf::from(image_path);
+    let metadata = fs::symlink_metadata(&supplied_path)
+        .map_err(|error| format!("无法读取作品文件：{error}"))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("作品预览只接受图片目录中的普通文件".to_string());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_IMAGE_PREVIEW_BYTES {
+        return Err("图片为空或超过 32 MiB 的预览上限；可在作品文件夹中打开".to_string());
+    }
+    let path = supplied_path
+        .canonicalize()
+        .map_err(|error| format!("无法确认作品路径：{error}"))?;
+    let root = crate::desktop_backend::creations_directory(app, "image")?;
+    if path.parent() != Some(root.as_path())
+        || !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        return Err("只允许预览当前作品目录中的 PNG 图片".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|error| format!("读取图片失败：{error}"))?;
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return Err("文件扩展名为 PNG，但内容不是有效的 PNG 图片".to_string());
+    }
+    Ok(format!("data:image/png;base64,{}", base64_encode(&bytes)))
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().saturating_add(2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let first = u32::from(chunk[0]);
+        let second = chunk.get(1).copied().map(u32::from).unwrap_or(0);
+        let third = chunk.get(2).copied().map(u32::from).unwrap_or(0);
+        let value = (first << 16) | (second << 8) | third;
+        encoded.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        encoded.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[((value >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(value & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
 }
 
 pub struct GenerationControl {
@@ -1030,6 +1149,14 @@ pub fn generate_media(
         let _ = fs::remove_file(&output);
         return Err("引擎未生成有效的非空作品文件".to_string());
     }
+    if request.kind == "image" {
+        let mut file = File::open(&output).map_err(|error| format!("读取生成图片失败：{error}"))?;
+        let mut signature = [0u8; PNG_SIGNATURE.len()];
+        if file.read_exact(&mut signature).is_err() || &signature != PNG_SIGNATURE {
+            let _ = fs::remove_file(&output);
+            return Err("引擎未生成有效的 PNG 图片；无效输出已清理".to_string());
+        }
+    }
     Ok(MediaGenerationResult {
         output_path: output.display().to_string(),
         kind: request.kind,
@@ -1051,6 +1178,14 @@ mod tests {
         assert!(!is_supported_media_weight(Path::new("model.ckpt")));
         assert!(!is_supported_media_weight(Path::new("custom_node.py")));
         assert!(!is_supported_media_weight(Path::new("tokenizer.json")));
+    }
+
+    #[test]
+    fn base64_encoding_handles_padding_and_empty_input() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
     }
 
     #[test]

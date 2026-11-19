@@ -37,11 +37,11 @@
 
       <section class="page active" id="page-overview" data-title="概览">
         <div class="page-intro overview-intro"><div><div class="eyebrow">DEVICE OVERVIEW</div><h1>本机概览</h1><p class="intro-copy">硬件与模型磁盘空间来自本机检测；未取得的数据会显示为未知。</p></div><button class="button secondary" id="refresh-hardware" type="button">重新检测硬件</button></div>
-        <section class="quick-start-steps" aria-label="本地模型快速开始">
-          <article class="quick-start-step" data-quick-step="hardware"><span class="quick-step-number">1</span><div><strong>检测硬件</strong><small id="quickstep-hardware-status">正在读取本机信息…</small></div><button class="text-button" id="quickstep-refresh-hardware" type="button">重新检测</button></article>
-          <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>安装推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><a class="text-button" href="#run">管理引擎</a></article>
-          <article class="quick-start-step" data-quick-step="models"><span class="quick-step-number">3</span><div><strong>准备模型</strong><small id="quickstep-model-status">正在读取本地模型…</small></div><a class="text-button" href="#models">打开模型库</a></article>
-        </section>
+      <section class="quick-start-steps" aria-label="本地模型快速开始">
+        <article class="quick-start-step" data-quick-step="hardware"><span class="quick-step-number">1</span><div><strong>检测硬件</strong><small id="quickstep-hardware-status">正在读取本机信息…</small></div><button class="text-button" id="quickstep-refresh-hardware" type="button">重新检测</button></article>
+        <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>安装推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><button class="text-button" id="quickstep-engine-action" type="button" disabled>读取状态…</button></article>
+        <article class="quick-start-step" data-quick-step="models"><span class="quick-step-number">3</span><div><strong>准备模型</strong><small id="quickstep-model-status">正在读取本地模型…</small></div><a class="text-button" href="#models">打开模型库</a></article>
+      </section>
         <section class="overview-device-card card" aria-labelledby="overview-headline">
           <div class="overview-device-layout">
             <div class="overview-device-main">
@@ -52,7 +52,7 @@
               </div>
             </div>
             <div class="overview-device-specs">
-              <div class="overview-spec-row"><span>图形设备</span><div><strong id="hardware-gpu">检测中…</strong><small id="gpu-memory">显存未知</small></div></div>
+              <div class="overview-spec-row"><span>图形设备</span><div><strong id="hardware-gpu">检测中…</strong><small id="gpu-memory">显存总量 / 已用未知</small></div></div>
               <div class="overview-spec-row"><span>处理器</span><div><strong id="hardware-cpu">检测中…</strong><small id="hardware-cores">处理器核心数未知</small></div></div>
               <div class="overview-spec-row"><span>内存</span><div><strong id="hardware-memory">未知</strong><small id="memory-free">可用内存未知</small></div></div>
               <div class="overview-spec-row"><span>模型目录</span><div class="overview-directory"><code id="overview-model-dir">读取中…</code><button class="text-button" id="overview-choose-model-dir" type="button">更改位置</button></div></div>
@@ -61,7 +61,7 @@
           </div>
         </section>
         <section class="overview-recommendation card" aria-labelledby="overview-recommendation-title">
-          <div><div class="eyebrow">MODEL GUIDANCE</div><h2 id="overview-recommendation-title">模型适配建议</h2><p id="overview-recommendation-copy">等待真实硬件检测结果；模型文件大小不等同于运行时所需内存。</p></div>
+          <div><div class="overview-guidance-heading"><div class="eyebrow">MODEL GUIDANCE</div><span class="overview-tier-badge" id="overview-tier-badge">等待检测</span></div><h2 id="overview-recommendation-title">模型适配建议</h2><p id="overview-recommendation-copy">等待真实硬件检测结果；模型文件大小不等同于运行时所需内存。</p></div>
           <div class="overview-recommendation-actions"><a class="button secondary" id="overview-recommended-models" href="#models">查看推荐模型</a><a class="button primary" id="overview-all-models" href="#models">全部模型</a></div>
         </section>
         <div class="section-heading"><div><h2>本地引擎</h2><p>对话引擎与图像/视频共用引擎分别安装和管理。</p></div><a class="text-link" href="#run">打开运行管理 →</a></div>
@@ -134,7 +134,7 @@
             <div class="option-row disabled-option"><div><strong>思考模式</strong><small id="thinking-mode-note">不可强制切换：由模型模板/服务器默认值决定；当前无法可靠识别模型是否支持。</small></div><label class="switch" title="未可靠识别模型能力前不可用"><input type="checkbox" id="thinking-mode" disabled /><span></span></label></div>
             <div class="option-row"><div><strong>Flash Attention</strong><small id="flash-capability-note">自动遵循服务器默认值</small></div><select id="flash-attention" aria-label="Flash Attention 设置"><option value="auto">自动</option><option value="on">开启</option><option value="off">关闭</option></select></div>
             <div class="option-row"><div><strong>KV 缓存 Q8</strong><small id="kv-capability-note">降低缓存内存占用；可能影响速度</small></div><label class="switch"><input type="checkbox" id="kv-cache-q8" /><span></span></label></div>
-            <div class="option-row"><div><strong>崩溃后自动重启</strong><small>检测到异常退出时最多自动重启一次；关闭应用会停止服务</small></div><label class="switch"><input type="checkbox" id="auto-restart" /><span></span></label></div>
+            <div class="option-row"><div><strong>崩溃后自动重启</strong><small>检测到异常退出后最多重试 3 次，间隔 1 / 3 / 8 秒；达到上限后停止</small></div><label class="switch"><input type="checkbox" id="auto-restart" /><span></span></label></div>
             <div class="option-row"><div><strong>局域网访问</strong><small id="lan-access-note">默认关闭、仅绑定 127.0.0.1。开启后同一私有网段设备可访问未认证 API；只在可信网络开启，且仅绑定一个私有 IPv4 地址。</small></div><label class="switch"><input type="checkbox" id="lan-access" /><span></span></label></div>
             <div class="estimate-box"><div><small>生成速度 <em>本机未实测</em></small><strong id="estimated-speed">未实测</strong></div><div><small>首次加载 <em>本机未实测</em></small><strong id="estimated-load">未实测</strong></div><p>此版本没有本机基准测试；不预设 token/s 或加载时长。模型大小与内存只用于粗略资源参考。</p></div>
             <div class="run-actions"><button class="button primary" id="start-model" disabled>启动模型</button><button class="button danger" id="stop-model" disabled>停止</button></div>
@@ -170,11 +170,11 @@
                 <button class="chat-tool-button unavailable" type="button" disabled title="没有图像模型权重或生成接口">▧ 画图</button>
                 <button class="chat-tool-button unavailable" type="button" disabled title="没有视频模型、任务队列或导出接口">▻ 视频</button>
                 <button class="chat-tool-button unavailable" type="button" disabled title="推理服务没有独立思考模式开关；由模型模板决定">♧ 思考：关</button>
-                <details class="chat-settings"><summary class="chat-tool-button">⚙ 对话设置</summary><div class="chat-settings-panel"><label for="chat-temperature">回答随机度 <strong id="chat-temperature-value">0.7</strong></label><input id="chat-temperature" type="range" min="0" max="1.5" step="0.1" value="0.7" /><label class="history-setting"><input id="chat-include-history" type="checkbox" checked />携带最近对话作为上下文（最多 60 条消息）</label><small>使用 llama-server 非流式文本接口。设置保存在本机。</small></div></details>
+                <details class="chat-settings"><summary class="chat-tool-button">⚙ 对话设置</summary><div class="chat-settings-panel"><label for="chat-temperature">回答随机度 <strong id="chat-temperature-value">0.7</strong></label><input id="chat-temperature" type="range" min="0" max="1.5" step="0.1" value="0.7" /><label class="history-setting"><input id="chat-include-history" type="checkbox" checked />携带最近对话作为上下文（最多 60 条消息）</label><small>使用 llama-server OpenAI 兼容的 SSE 流式接口。设置保存在本机。</small></div></details>
                 <button class="button primary send-chat-button" id="send-chat" type="submit" disabled>发送 ↑</button>
               </div>
               <div class="chat-capability-note">工具调用、电脑操作、画图/视频和思考开关因后端尚无对应能力而禁用；附件仅支持本机读取的 UTF-8 文本/代码，不支持图片或 PDF。</div>
-              <div class="compose-footnote"><span class="muted tiny" id="chat-hint">先在“运行”页面启动模型</span><span class="muted tiny">本机保存 · 非流式回复</span></div>
+              <div class="compose-footnote"><span class="muted tiny" id="chat-hint">先在“运行”页面启动模型</span><span class="muted tiny">本机保存 · 实时流式回复</span></div>
             </form>
           </div>
         </div>
@@ -229,39 +229,77 @@
 
       <section class="page" id="page-schedule" data-title="定时">
         <div class="page-intro"><div><div class="eyebrow">SCHEDULED TASKS</div><h1>定时任务</h1><p class="intro-copy">安排提示词在本地运行中的模型上执行；任务列表与执行摘要保存在此设备。</p></div><button class="button secondary" id="schedule-refresh" type="button">刷新任务</button></div>
-        <div class="notice"><strong>运行边界</strong><span>任务只在应用保持打开时检查；到期时须有本地 llama-server 正在运行，否则会记录失败。不会自动启动或切换模型，也不提供应用关闭后的后台执行或推送。</span></div>
+        <div class="notice"><strong>运行边界</strong><span>任务只在应用保持打开时检查；到期时须有本地 llama-server 正在运行，否则会记录失败。不会自动启动或切换模型，也不提供应用关闭后的后台执行。外部通知仅在任务勾选后发送。</span></div>
         <div class="schedule-layout">
           <form id="schedule-form" class="card schedule-form">
             <h2>安排新任务</h2>
             <label for="schedule-title">任务名称</label><input id="schedule-title" maxlength="200" required placeholder="例如：整理今天的笔记" />
             <label for="schedule-at">首次执行时间（本地时间）</label><input id="schedule-at" type="datetime-local" required />
-            <label for="schedule-recurrence">重复</label><select id="schedule-recurrence"><option value="once">仅一次</option><option value="hourly">每小时</option><option value="daily">每 24 小时</option></select>
+            <label for="schedule-recurrence">重复</label><select id="schedule-recurrence"><option value="once">仅一次</option><option value="hourly">每小时</option><option value="daily">每天（每 24 小时）</option><option value="weekly">每周（每 7 天）</option><option value="interval">自定义间隔</option></select>
+            <div id="schedule-interval-wrap" class="schedule-interval-wrap" hidden><label for="schedule-interval">间隔（分钟，1–525600）</label><input id="schedule-interval" type="number" min="1" max="525600" step="1" value="60" /></div>
             <label for="schedule-prompt">发送给当前运行模型的提示词</label><textarea id="schedule-prompt" rows="6" maxlength="32000" required placeholder="写下到时间后要交给本地模型的任务…"></textarea>
+            <label class="schedule-notify-choice"><input id="schedule-notify" type="checkbox" />执行完成后，将任务名称、状态和模型摘要发送到已配置渠道</label>
             <button class="button primary" id="schedule-create" type="submit">创建定时任务</button>
-            <p class="muted tiny">重复按固定时间间隔计算，不因时区夏令时调整；应用关闭期间错过的周期会跳过，不会补跑。</p>
+            <p class="muted tiny">重复按固定时间间隔计算，不因时区夏令时调整；应用关闭期间错过的周期会跳过，不会补跑。推送凭据只保留在本次应用运行的内存中，退出后需重新填写。</p>
           </form>
           <section class="card schedule-list-card" aria-labelledby="schedule-list-heading">
             <div class="schedule-list-heading"><div><h2 id="schedule-list-heading">已安排的任务</h2><p class="muted tiny">启用、暂停或删除任务；最近执行结果会显示在任务卡片中。</p></div><span id="schedule-task-count" class="muted tiny">0 项</span></div>
             <div id="schedule-list" class="schedule-list" aria-live="polite"><p class="muted tiny">正在读取本机任务…</p></div>
           </section>
         </div>
+        <section class="card schedule-push-card" aria-labelledby="schedule-push-heading">
+          <div class="schedule-list-heading"><div><h2 id="schedule-push-heading">通知渠道</h2><p class="muted tiny">只有勾选了“执行后通知”的任务才会向这里启用的渠道发送结果；最多配置 20 个。</p></div><span id="push-channel-count" class="muted tiny">0 个</span></div>
+          <div class="notice push-security-note"><strong>凭据保护</strong><span>渠道凭据仅暂存在应用内存，不写入任务文件或本机配置；关闭应用后会清空。添加渠道只保存配置，不会发送测试消息。QQ 使用通用 Webhook JSON（标题/内容），需由目标机器人或中转服务兼容。</span></div>
+          <div class="schedule-push-layout">
+            <form id="push-channel-form" class="schedule-form push-channel-form">
+              <h3>添加渠道</h3>
+              <label for="push-channel-name">显示名称</label><input id="push-channel-name" maxlength="100" required placeholder="例如：工作群通知" />
+              <label for="push-channel-kind">渠道类型</label><select id="push-channel-kind"><option value="telegram">Telegram Bot</option><option value="serverChan">微信 · Server 酱</option><option value="pushPlus">微信 · PushPlus</option><option value="dingTalk">钉钉机器人</option><option value="feishu">飞书自定义机器人</option><option value="bark">Bark</option><option value="qqWebhook">QQ Webhook（通用 JSON）</option><option value="webhook">自定义 Webhook</option></select>
+              <div id="push-channel-fields" class="push-channel-fields"></div>
+              <button class="button secondary" id="push-channel-save" type="submit">仅保存到本次运行</button>
+            </form>
+            <div id="push-channel-list" class="push-channel-list" aria-live="polite"><p class="muted tiny">正在读取通知渠道…</p></div>
+          </div>
+          <p class="muted tiny push-unverified-note">本地 Mock 测试覆盖了 Webhook 请求结构与通用响应处理；各真实服务端点、账号权限和实际送达均未实测。任何渠道都不会在配置时主动联网。</p>
+        </section>
       </section>
 
       <section class="page image-page" id="page-image" data-title="画图">
         <header class="image-page-toolbar">
-          <div class="image-page-title"><h1>画图</h1><div class="image-view-switch" role="tablist" aria-label="画图工作区视图"><button class="image-view-tab active" id="image-view-form" type="button" role="tab" aria-selected="true" aria-controls="image-form-view" data-image-view="form">表单</button><button class="image-view-tab" id="image-view-canvas" type="button" role="tab" aria-selected="false" aria-controls="image-canvas-view" data-image-view="canvas">画布</button></div></div>
+          <div class="image-page-title"><h1>画图</h1><div class="image-view-switch" role="tablist" aria-label="画图工作区视图"><button class="image-view-tab active" id="image-view-form" type="button" role="tab" aria-selected="true" aria-controls="image-form-view" data-image-view="form">生成</button><button class="image-view-tab" id="image-view-canvas" type="button" role="tab" aria-selected="false" aria-controls="image-canvas-view" data-image-view="canvas">作品</button></div></div>
           <div class="image-page-actions"><button class="button secondary" id="open-creations-directory" type="button">打开作品文件夹</button><button class="button secondary" id="open-image-model-library" type="button">搜索 / 下载画图模型</button></div>
         </header>
         <section class="media-engine-banner" aria-live="polite">
-          <div class="media-engine-copy"><div class="image-engine-heading"><div><div class="engine-kicker">SHARED MEDIA ENGINE</div><h2>stable-diffusion.cpp CPU 引擎</h2></div><span class="status-pill empty" id="image-engine-status">读取中…</span></div><p id="image-engine-description">图像推理使用官方 sd-cli；本应用当前安装的是 CPU x64 包，不会调用显卡。引擎与模型权重需分别安装。</p><div class="image-engine-progress" id="image-engine-progress" hidden></div><div class="engine-error" id="image-engine-error" hidden></div></div>
+          <div class="media-engine-copy"><div class="image-engine-heading"><div><div class="engine-kicker">SHARED MEDIA ENGINE</div><h2>stable-diffusion.cpp · CPU</h2></div><span class="status-pill empty" id="image-engine-status">读取中…</span></div><p id="image-engine-description">图像推理使用官方 sd-cli；当前 CPU x64 引擎不调用显卡。引擎与模型权重分别管理。</p><div class="image-engine-progress" id="image-engine-progress" hidden></div><div class="engine-error" id="image-engine-error" hidden></div></div>
           <div class="media-engine-actions"><button class="button primary" id="image-install-engine" data-media-install type="button" disabled>读取引擎状态…</button><a class="button secondary" id="image-manage-engine" href="#run" hidden>已安装 · 管理引擎</a></div>
         </section>
-        <section class="card image-model-empty" aria-labelledby="image-model-empty-title"><div class="image-empty-mark" aria-hidden="true">▧</div><div class="image-empty-copy"><h2 id="image-model-empty-title">模型兼容性按官方 CLI 实测报错判断</h2><p>从已下载媒体组件或 ComfyUI 只读清单中选择主模型。基础模型可单文件推理；需要额外 VAE / 文本编码器的模型请按模型卡补齐。文件被识别不等于引擎保证兼容。</p><a href="#models" id="image-model-manager-link">管理媒体模型组件 →</a></div></section>
+        <section class="card image-model-empty" id="image-model-guidance" aria-labelledby="image-model-empty-title"><div class="image-empty-mark" aria-hidden="true">▧</div><div class="image-empty-copy"><h2 id="image-model-empty-title">先选择一个本机模型</h2><p>可选已下载媒体组件或 ComfyUI 只读清单中的主模型。文件被识别不等于引擎保证兼容；需额外 VAE / 文本编码器时，请按模型卡补齐。</p><a href="#models" id="image-model-manager-link">管理媒体模型组件 →</a></div></section>
         <div class="image-workspace">
           <section class="image-form-view" id="image-form-view" role="tabpanel" aria-labelledby="image-view-form">
-            <div class="image-form-grid"><section class="card image-generation-form" aria-labelledby="image-generation-heading"><div class="image-section-heading"><div><h2 id="image-generation-heading">生成图片</h2><p>通过 stable-diffusion.cpp 官方 sd-cli 调用；进程结束后验证输出文件。</p></div><span class="status-pill empty">CPU</span></div><label for="image-model-select">主模型（.safetensors / .gguf）</label><select id="image-model-select"><option value="">先下载或扫描模型组件…</option></select><label for="image-vae-select">VAE（可选，按模型指南选择）</label><select id="image-vae-select"><option value="">不指定额外 VAE</option></select><label for="image-text-mode">文本编码器类型</label><select id="image-text-mode"><option value="t5xxl">T5-XXL（--t5xxl）</option><option value="llm">Qwen3-VL（--llm）</option></select><label for="image-text-select">文本编码器文件（按主模型指南选择）</label><select id="image-text-select"><option value="">不指定额外编码器</option></select><label for="image-prompt">提示词</label><textarea id="image-prompt" rows="4" maxlength="8192" placeholder="描述要生成的图像"></textarea><label for="image-negative-prompt">反向提示词（可选）</label><textarea id="image-negative-prompt" rows="2" maxlength="8192" placeholder="不希望出现的内容"></textarea><div class="image-generation-options"><label for="image-size">尺寸<select id="image-size"><option value="512x512">512 × 512</option><option value="768x768">768 × 768</option><option value="832x512">832 × 512</option><option value="512x832">512 × 832</option></select></label><label for="image-steps">步数<input id="image-steps" type="number" min="1" max="100" value="20" /></label></div><div class="media-generation-actions"><button class="button primary" id="generate-image" type="button">生成图片</button><button class="button danger" id="cancel-image-generation" type="button" hidden>取消生成</button></div><p id="image-generation-status" class="muted tiny" aria-live="polite">请选择模型组件。引擎错误会显示在这里；CPU 推理速度随模型和硬件变化，不作速度承诺。</p><p id="image-result-path" class="muted tiny"></p></section><section class="image-preview-card" aria-label="生成结果"><div class="image-preview-placeholder"><span aria-hidden="true">▧</span><strong>尚无生成结果</strong><small>成功的 PNG 保存到本机作品文件夹。</small></div></section></div>
+            <div class="image-form-grid">
+              <section class="card image-generation-form" aria-labelledby="image-generation-heading">
+                <div class="image-section-heading"><div><h2 id="image-generation-heading">生成图片</h2><p>调用 stable-diffusion.cpp 官方 sd-cli；完成后检查 PNG 并保存在本机。</p></div><span class="status-pill empty">CPU</span></div>
+                <label for="image-model-select">主模型</label><select id="image-model-select"><option value="">先下载或扫描模型组件…</option></select>
+                <label for="image-prompt">提示词</label><textarea id="image-prompt" rows="5" maxlength="8192" placeholder="描述主体、场景、光线与风格…"></textarea>
+                <div class="image-generation-options"><label for="image-size">画面尺寸<select id="image-size"><option value="512x512">512 × 512 · 方形</option><option value="768x768">768 × 768 · 方形</option><option value="832x512">832 × 512 · 横向</option><option value="512x832">512 × 832 · 纵向</option></select></label><label for="image-steps">步数<input id="image-steps" type="number" min="1" max="100" value="20" /></label></div>
+                <details class="image-extra-fields"><summary>按模型需要配置组件与反向提示词</summary><div class="image-advanced-grid"><label for="image-vae-select">VAE（可选）<select id="image-vae-select"><option value="">不指定额外 VAE</option></select></label><label for="image-text-mode">文本编码器类型<select id="image-text-mode"><option value="t5xxl">T5-XXL（--t5xxl）</option><option value="llm">Qwen3-VL（--llm）</option></select></label><label for="image-text-select">文本编码器文件<select id="image-text-select"><option value="">不指定额外编码器</option></select></label><label for="image-negative-prompt">反向提示词（可选）<textarea id="image-negative-prompt" rows="3" maxlength="8192" placeholder="不希望出现的内容"></textarea></label></div><p class="muted tiny">先核对主模型指南；只有模型需要额外组件时才选择。</p></details>
+                <div class="media-generation-actions"><button class="button primary" id="generate-image" type="button">生成图片</button><button class="button danger" id="cancel-image-generation" type="button" hidden>取消生成</button></div>
+                <p id="image-generation-status" class="muted tiny" aria-live="polite">请选择本机模型组件。CPU 推理速度随模型和硬件变化，不作速度承诺。</p><p id="image-result-path" class="muted tiny"></p>
+              </section>
+              <section class="image-preview-card" aria-label="生成结果预览">
+                <div class="image-preview-heading"><div><strong>结果预览</strong><small id="image-preview-meta">生成后会显示在这里</small></div><button class="text-button" id="image-open-result" type="button" disabled>在作品中查看</button></div>
+                <div class="image-preview-stage"><img id="image-preview-image" alt="最近生成的图片" hidden /><div class="image-preview-placeholder" id="image-preview-placeholder"><span aria-hidden="true">▧</span><strong>等待你的第一张图片</strong><small>结果保存在本机；不会自动上传。</small></div></div>
+              </section>
+            </div>
           </section>
-          <section class="image-canvas-view" id="image-canvas-view" role="tabpanel" aria-labelledby="image-view-canvas" hidden><div class="image-canvas-placeholder"><span aria-hidden="true">▧</span><h2>画布为空</h2><p>当前没有可载入的作品；画布编辑与生成功能尚未接入。</p></div></section>
+          <section class="image-canvas-view" id="image-canvas-view" role="tabpanel" aria-labelledby="image-view-canvas" hidden>
+            <div class="image-gallery-toolbar"><div><h2>本机图片作品</h2><p id="image-gallery-summary" class="muted">正在读取作品清单…</p></div><button class="button secondary" id="refresh-image-gallery" type="button">刷新作品</button></div>
+            <div class="image-gallery-layout">
+              <section class="image-gallery-stage" aria-label="图片作品预览"><div class="image-gallery-stage-inner"><img id="image-canvas-image" alt="选中的本机图片作品" hidden /><div class="image-canvas-placeholder" id="image-canvas-placeholder"><span aria-hidden="true">▧</span><h2>还没有图片作品</h2><p>生成完成的 PNG 会出现在这里；也可以从作品列表中选择查看。</p></div></div><div class="image-gallery-caption"><strong id="image-canvas-name">未选择作品</strong><small id="image-canvas-meta">PNG 预览 · 本机文件</small></div></section>
+              <aside class="image-gallery-side"><div class="image-gallery-side-heading"><strong>最近作品</strong><small>最多显示 100 张</small></div><div id="image-gallery-list" class="image-gallery-list" aria-label="最近生成的图片"><div class="empty-state">正在读取…</div></div></aside>
+            </div>
+            <p id="image-gallery-status" class="muted tiny" aria-live="polite">作品目录只读索引；删除和重命名请在作品文件夹中操作。</p>
+          </section>
         </div>
       </section>
 
@@ -274,7 +312,47 @@
           <div class="media-engine-copy"><div class="image-engine-heading"><div><div class="engine-kicker">WAN VIDEO · CPU ENGINE</div><h2>Wan 文生视频模式</h2></div><span class="status-pill empty" id="video-engine-status">读取中…</span></div><p id="video-engine-description">视频调用官方 `-M vid_gen` 模式和 Wan 组件；当前只有 CPU x64 引擎，不使用显卡。33 帧短片可能占用大量内存和时间，不能保证在本机完成。</p><div class="image-engine-progress" id="video-engine-progress" hidden></div><div class="engine-error" id="video-engine-error" hidden></div></div>
           <div class="media-engine-actions"><button class="button primary" id="video-install-engine" data-media-install type="button" disabled>读取引擎状态…</button><a class="button secondary" id="video-manage-engine" href="#run" hidden>已安装 · 管理引擎</a></div>
         </section>
-        <section class="card image-generation-form video-generation-form" aria-labelledby="video-model-empty-title"><div class="image-section-heading"><div><h2 id="video-model-empty-title">Wan 文字生成视频</h2><p>当前只开放 33 帧单段任务；请使用 Wan T2V 模型。</p></div><span class="status-pill empty">33 帧</span></div><label for="video-model-select">Wan 主模型 / 低噪声模型</label><select id="video-model-select"><option value="">先下载或扫描模型组件…</option></select><label for="video-high-noise-select">高噪声专家（Wan2.2 双专家可选）</label><select id="video-high-noise-select"><option value="">无 / Wan2.1 或 Wan2.2 单专家模型</option></select><label for="video-vae-select">Wan VAE（必需）</label><select id="video-vae-select"><option value="">选择 VAE…</option></select><label for="video-text-select">T5-XXL 文本编码器（必需）</label><select id="video-text-select"><option value="">选择 T5-XXL…</option></select><label for="video-prompt">提示词</label><textarea id="video-prompt" rows="4" maxlength="8192" placeholder="描述 33 帧短片内容"></textarea><label for="video-negative-prompt">反向提示词（可选）</label><textarea id="video-negative-prompt" rows="2" maxlength="8192"></textarea><div class="image-generation-options"><label for="video-size">尺寸<select id="video-size"><option value="832x480">832 × 480</option><option value="480x832">480 × 832</option><option value="640x368">640 × 368</option></select></label><label for="video-steps">步数<input id="video-steps" type="number" min="1" max="100" value="20" /></label></div><div class="media-generation-actions"><button class="button primary" id="generate-video" type="button">生成视频</button><button class="button danger" id="cancel-video-generation" type="button" hidden>取消生成</button></div><p id="video-generation-status" class="muted tiny" aria-live="polite">所选权重文件总大小不等于运行内存；CPU 视频生成不适用于所有电脑，遇到内存不足可取消。</p><p id="video-result-path" class="muted tiny"></p><div class="notice"><strong>运行限制</strong><span>本地安装的是 stable-diffusion.cpp CPU 版本；即使检测到独显，本版本也不会使用 GPU。Wan 的显存/内存需求随模型、分辨率和实现变化，页面不显示猜测数值。</span></div></section>
+        <div class="video-workspace" aria-label="Wan 文生视频工作区">
+          <section class="card image-generation-form video-generation-form" aria-labelledby="video-model-empty-title">
+            <div class="image-section-heading"><div><h2 id="video-model-empty-title">Wan 文字生成视频</h2><p>当前开放 33 帧单段任务；请按模型卡选择兼容组件。</p></div><span class="status-pill empty">33 帧</span></div>
+            <section class="video-form-section" aria-labelledby="video-components-heading">
+              <div class="video-form-section-heading"><span class="video-step-number">01</span><div><h3 id="video-components-heading">模型组件</h3><p>权重需彼此兼容；下拉列表来自本机组件与只读扫描。</p></div></div>
+              <div class="video-component-grid">
+                <label for="video-model-select">主模型 / 低噪声模型<select id="video-model-select"><option value="">先下载或扫描模型组件…</option></select></label>
+                <label for="video-high-noise-select">高噪声专家 <span>Wan2.2 双专家可选</span><select id="video-high-noise-select"><option value="">无 / Wan2.1 或单专家模型</option></select></label>
+                <label for="video-vae-select">Wan VAE <span>必需</span><select id="video-vae-select"><option value="">选择 VAE…</option></select></label>
+                <label for="video-text-select">T5-XXL 文本编码器 <span>必需</span><select id="video-text-select"><option value="">选择 T5-XXL…</option></select></label>
+              </div>
+            </section>
+            <section class="video-form-section video-prompt-section" aria-labelledby="video-prompt-heading">
+              <div class="video-form-section-heading"><span class="video-step-number">02</span><div><h3 id="video-prompt-heading">描述画面</h3><p>清楚描述主体、动作、镜头和场景变化。</p></div></div>
+              <label for="video-prompt">提示词<textarea id="video-prompt" rows="5" maxlength="8192" placeholder="描述 33 帧短片的主体、动作、镜头与场景…"></textarea></label>
+              <details class="video-negative-details"><summary>添加反向提示词（可选）</summary><label class="sr-only" for="video-negative-prompt">反向提示词</label><textarea id="video-negative-prompt" rows="3" maxlength="8192" placeholder="描述希望避免的内容"></textarea></details>
+            </section>
+            <section class="video-form-section" aria-labelledby="video-settings-heading">
+              <div class="video-form-section-heading"><span class="video-step-number">03</span><div><h3 id="video-settings-heading">输出设置</h3><p>当前固定为 33 帧；分辨率和步数会影响资源占用。</p></div></div>
+              <div class="video-output-settings image-generation-options">
+                <label for="video-size">画面尺寸<select id="video-size"><option value="832x480">832 × 480 · 横向</option><option value="480x832">480 × 832 · 纵向</option><option value="640x368">640 × 368 · 横向</option></select></label>
+                <label for="video-steps">步数<input id="video-steps" type="number" min="1" max="100" value="20" /></label>
+              </div>
+              <div class="video-fixed-settings"><span>33 帧</span><span>单段输出</span><span>CPU 推理</span></div>
+            </section>
+            <div class="media-generation-actions video-generation-actions"><button class="button primary" id="generate-video" type="button">生成视频</button><button class="button danger" id="cancel-video-generation" type="button" hidden>取消生成</button></div>
+            <div class="notice video-limit-note"><strong>运行限制</strong><span>当前引擎为 CPU x64，不使用 GPU。权重文件大小不等于运行内存；Wan 的实际资源需求随模型、分辨率和实现变化，不显示猜测数值。</span></div>
+          </section>
+          <aside class="card video-output-card" aria-labelledby="video-output-heading">
+            <div class="video-output-heading"><div><div class="engine-kicker">LOCAL VIDEO OUTPUT</div><h2 id="video-output-heading">任务状态与输出</h2></div><span class="video-output-format">WEBM</span></div>
+            <div class="video-output-stage" aria-label="视频输出状态">
+              <div class="video-output-placeholder"><span class="video-output-mark" aria-hidden="true">▻</span><strong>等待生成视频</strong><p>完成后作品会保存在本机视频目录；可从顶部按钮打开文件夹查看。</p></div>
+            </div>
+            <div class="video-output-details">
+              <div class="video-output-facts"><div><span>片段长度</span><strong>33 帧</strong></div><div><span>保存位置</span><strong>本机作品目录</strong></div></div>
+              <p id="video-generation-status" class="video-generation-status muted tiny" aria-live="polite">所选权重文件总大小不等于运行内存；CPU 视频生成不适用于所有电脑，遇到内存不足可取消。</p>
+              <p id="video-result-path" class="video-result-path muted tiny" aria-live="polite"></p>
+              <p class="video-output-note">页面不会上传作品。当前可通过作品文件夹使用本机播放器查看生成的视频。</p>
+            </div>
+          </aside>
+        </div>
       </section>
 
       <section class="page" id="page-monitor" data-title="监测">
@@ -282,7 +360,7 @@
         <div class="summary-grid two-metrics"><article class="summary-card"><div class="summary-head"><span>CPU</span><strong id="monitor-cpu-value">—</strong></div><div class="meter"><i id="monitor-cpu-bar"></i></div><small id="monitor-cpu-name">—</small></article><article class="summary-card"><div class="summary-head"><span>内存</span><strong id="monitor-ram-value">—</strong></div><div class="meter blue-meter"><i id="monitor-ram-bar"></i></div><small id="monitor-ram-text">—</small></article></div>
         <div class="card chart-card"><h2>最近 2 分钟</h2><canvas id="system-chart" width="1200" height="300" aria-label="CPU 和内存使用曲线"></canvas><div class="legend"><span><i class="legend-cpu"></i>CPU</span><span><i class="legend-ram"></i>内存</span></div></div>
         <section class="card monitor-process-card"><h2>模型进程</h2><div id="monitor-processes" class="monitor-process-list" aria-live="polite"><p class="muted tiny">正在读取本机模型进程…</p></div><p class="muted tiny">每约 2 秒读取系统进程表并按 llama-server / stable-diffusion.cpp 名称汇总 PID、CPU 与内存；CPU 总和可能超过 100%。无法匹配名称的辅助进程不计入。</p></section>
-        <div class="card"><h2>本地推理服务</h2><div class="metadata-row"><span>监听地址</span><strong id="monitor-api">127.0.0.1:8686</strong></div><p class="muted tiny">默认仅绑定 127.0.0.1；只有开启运行页的局域网访问后，才绑定一个私有 IPv4 地址。</p></div>
+        <div class="card"><h2>本地推理服务</h2><div class="metadata-row"><span>监听地址</span><strong id="monitor-api">127.0.0.1:8666</strong></div><p class="muted tiny">默认仅绑定 127.0.0.1；只有开启运行页的局域网访问后，才绑定一个私有 IPv4 地址。</p></div>
       </section>
 
       <section class="page" id="page-settings" data-title="设置">
@@ -290,7 +368,8 @@
         <form id="settings-form" class="settings-stack">
           <article class="card"><h2>模型存放</h2><label for="settings-model-dir">模型目录</label><div class="input-with-button"><input id="settings-model-dir" autocomplete="off" /><button class="button secondary" type="button" id="choose-model-dir">选择目录</button></div><p class="muted tiny">新导入或下载的 GGUF 文件存放在这里；更改目录不会搬移已有模型。</p></article>
           <article class="card"><h2>作品保存位置</h2><label for="settings-creations-dir">图片 / 视频作品目录</label><div class="input-with-button"><input id="settings-creations-dir" autocomplete="off" placeholder="留空使用应用默认目录" /><button class="button secondary" type="button" id="choose-creations-dir">选择目录</button></div><p class="muted tiny">留空时使用应用默认作品目录；选择位置后，图片与视频分别保存在 images 和 videos 子目录。更改位置不会移动已有作品。</p></article>
-          <article class="card"><h2>界面与服务</h2><label for="settings-appearance">外观</label><select id="settings-appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><label for="settings-port">本地 API 端口</label><input id="settings-port" type="number" min="1024" max="65535" /><p class="muted tiny">默认 8686；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。</p></article>
+          <article class="card"><h2>界面与服务</h2><label for="settings-language">界面语言</label><select id="settings-language"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select><p id="settings-language-note" class="muted tiny">英语目前覆盖导航、设置页和版本检查区；其他功能页可能仍显示中文。</p><label for="settings-appearance">外观</label><select id="settings-appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><label for="settings-port">本地 API 端口</label><input id="settings-port" type="number" min="1024" max="65535" /><p class="muted tiny">新配置默认 8666；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。</p></article>
+          <article class="card app-update-card"><h2>应用更新</h2><p class="muted tiny">只查询本项目公开 GitHub Release 的版本与发行说明；不会自动下载或安装。</p><div class="settings-actions"><button class="button secondary" id="check-app-update" type="button">检查应用更新</button><span class="muted tiny" id="app-update-status" aria-live="polite">尚未检查</span></div><div id="app-update-details" class="app-update-details" hidden></div></article>
           <div class="settings-actions"><button class="button primary" type="submit">保存设置</button><span class="muted tiny" id="settings-status"></span></div>
         </form>
         <div class="notice"><strong>本地数据</strong><span>对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。</span></div>

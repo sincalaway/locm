@@ -1,9 +1,12 @@
 use serde::Serialize;
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::{Duration, Instant},
 };
 
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
@@ -11,6 +14,8 @@ const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_LIST_DEPTH: usize = 6;
+const MAX_COMMAND_RUNTIME: Duration = Duration::from_secs(120);
+const COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +36,7 @@ pub struct WriteOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct CommandOutput {
     pub success: bool,
+    pub timed_out: bool,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -323,20 +329,95 @@ pub fn run_command(
         return Err("命令无效或超出安全长度限制".to_string());
     }
     let root = workspace_root(workspace)?;
-    let output = Command::new(program)
+    let mut child = Command::new(program)
         .args(args)
         .current_dir(&root)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("启动命令失败：{error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法捕获命令标准输出".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "无法捕获命令错误输出".to_string())?;
+    let stdout_receiver = capture_stream(stdout);
+    let stderr_receiver = capture_stream(stderr);
+    let started = Instant::now();
+    let (status, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break (status, false),
+            Ok(None) if started.elapsed() >= MAX_COMMAND_RUNTIME => {
+                let _ = child.kill();
+                let status = child
+                    .wait()
+                    .map_err(|error| format!("终止超时命令失败：{error}"))?;
+                break (status, true);
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("检查命令运行状态失败：{error}"));
+            }
+        }
+    };
+    let stdout = collect_stream(stdout_receiver, "标准输出")?;
+    let mut stderr = collect_stream(stderr_receiver, "错误输出")?;
+    if timed_out {
+        stderr.push_str("\n命令超过 120 秒时限；已终止直接启动的进程。");
+    }
     Ok(CommandOutput {
-        success: output.status.success(),
-        exit_code: output.status.code(),
-        stdout: truncate_utf8(&stdout, MAX_TOOL_OUTPUT_BYTES),
-        stderr: truncate_utf8(&stderr, MAX_TOOL_OUTPUT_BYTES),
+        success: status.success() && !timed_out,
+        timed_out,
+        exit_code: status.code(),
+        stdout,
+        stderr,
     })
+}
+
+fn capture_stream<R: Read + Send + 'static>(
+    mut stream: R,
+) -> Receiver<Result<(Vec<u8>, bool), String>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut captured = Vec::with_capacity(MAX_TOOL_OUTPUT_BYTES);
+        let mut truncated = false;
+        let mut buffer = [0u8; 8192];
+        let result = loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break Ok((captured, truncated)),
+                Ok(read) => {
+                    let remaining = MAX_TOOL_OUTPUT_BYTES.saturating_sub(captured.len());
+                    let kept = read.min(remaining);
+                    captured.extend_from_slice(&buffer[..kept]);
+                    truncated |= kept < read;
+                }
+                Err(error) => break Err(format!("读取命令输出失败：{error}")),
+            }
+        };
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn collect_stream(
+    receiver: Receiver<Result<(Vec<u8>, bool), String>>,
+    label: &str,
+) -> Result<String, String> {
+    let (bytes, was_truncated) = receiver
+        .recv_timeout(COMMAND_OUTPUT_DRAIN_TIMEOUT)
+        .map_err(|error| format!("等待命令{label}结束失败：{error}"))??;
+    let decoded = String::from_utf8_lossy(&bytes);
+    let mut output = truncate_utf8(&decoded, MAX_TOOL_OUTPUT_BYTES);
+    if was_truncated {
+        output.push_str("\n…（超过 32 KiB 的后续输出已丢弃）");
+    }
+    Ok(output)
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
@@ -348,4 +429,110 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     format!("{}\n…（输出已截断）", &value[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        capture_stream, collect_stream, delete_file, list_files, read_file, run_command,
+        write_file, MAX_TOOL_OUTPUT_BYTES,
+    };
+    use std::{fs, io::Cursor, path::Path};
+    use tempfile::tempdir;
+
+    fn make_workspace(root: &Path) -> std::path::PathBuf {
+        let workspace = root.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        workspace
+    }
+
+    #[test]
+    fn file_tools_reject_parent_and_absolute_paths() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::write(temp.path().join("outside.txt"), "outside").unwrap();
+        let root = workspace.to_string_lossy();
+        assert!(read_file(&root, "../outside.txt").is_err());
+        assert!(write_file(&root, "../outside.txt", "changed", false).is_err());
+        assert!(delete_file(&root, "../outside.txt").is_err());
+        let absolute = temp
+            .path()
+            .join("outside.txt")
+            .to_string_lossy()
+            .into_owned();
+        assert!(read_file(&root, &absolute).is_err());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("outside.txt")).unwrap(),
+            "outside"
+        );
+    }
+
+    #[test]
+    fn existing_file_is_not_overwritten_without_confirmation() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::write(workspace.join("note.txt"), "original").unwrap();
+        let root = workspace.to_string_lossy();
+
+        let outcome = write_file(&root, "note.txt", "replacement", false).unwrap();
+        assert!(!outcome.written);
+        assert!(outcome.requires_confirmation);
+        assert_eq!(read_file(&root, "note.txt").unwrap(), "original");
+
+        let outcome = write_file(&root, "note.txt", "replacement", true).unwrap();
+        assert!(outcome.written);
+        assert!(!outcome.requires_confirmation);
+        assert_eq!(read_file(&root, "note.txt").unwrap(), "replacement");
+    }
+
+    #[test]
+    fn listing_hides_git_metadata_and_delete_refuses_directories() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        fs::create_dir(workspace.join(".git")).unwrap();
+        fs::write(workspace.join(".git/config"), "private").unwrap();
+        fs::create_dir(workspace.join("folder")).unwrap();
+        let root = workspace.to_string_lossy();
+
+        let entries = list_files(&root, ".").unwrap();
+        assert!(entries.iter().any(|entry| entry.path == "folder"));
+        assert!(entries.iter().all(|entry| !entry.path.contains(".git")));
+        assert!(delete_file(&root, "folder").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_tools_do_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let outside = temp.path().join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+        symlink(&outside, workspace.join("linked.txt")).unwrap();
+        let root = workspace.to_string_lossy();
+
+        assert!(read_file(&root, "linked.txt").is_err());
+        assert!(write_file(&root, "linked.txt", "changed", true).is_err());
+        assert!(delete_file(&root, "linked.txt").is_err());
+        assert_eq!(fs::read_to_string(outside).unwrap(), "outside");
+    }
+
+    #[test]
+    fn command_tool_rejects_executable_paths_before_spawning() {
+        let temp = tempdir().unwrap();
+        let workspace = make_workspace(temp.path());
+        let root = workspace.to_string_lossy();
+        assert!(run_command(&root, "../python", &[]).is_err());
+        assert!(run_command(&root, "python", &["bad\0arg".to_string()]).is_err());
+    }
+
+    #[test]
+    fn command_output_capture_discards_bytes_after_the_limit() {
+        let input = vec![b'x'; MAX_TOOL_OUTPUT_BYTES + 2048];
+        let receiver = capture_stream(Cursor::new(input));
+        let output = collect_stream(receiver, "标准输出").unwrap();
+        assert!(output.len() <= MAX_TOOL_OUTPUT_BYTES + 64);
+        assert!(output.contains("超过 32 KiB"));
+    }
 }

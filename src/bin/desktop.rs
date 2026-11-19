@@ -19,6 +19,7 @@ use std::{
     collections::HashMap,
     ffi::OsString,
     fs,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -88,6 +89,24 @@ struct RuntimeInfo {
     last_error: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateInfo {
+    current_version: String,
+    latest_version: String,
+    update_available: bool,
+    release_url: String,
+    release_notes: String,
+}
+
+#[derive(Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    body: Option<String>,
+}
+
 #[derive(Clone)]
 struct RestartSpec {
     executable: PathBuf,
@@ -96,7 +115,24 @@ struct RestartSpec {
     bind_host: String,
     port: u16,
     enabled: bool,
-    attempted: bool,
+    attempts_used: u8,
+    next_attempt_at: Option<Instant>,
+}
+
+const MAX_AUTO_RESTARTS: u8 = 3;
+const AUTO_RESTART_BACKOFF_SECONDS: [u64; 3] = [1, 3, 8];
+
+fn auto_restart_delay(attempts_used: u8) -> Option<Duration> {
+    AUTO_RESTART_BACKOFF_SECONDS
+        .get(usize::from(attempts_used))
+        .copied()
+        .map(Duration::from_secs)
+}
+
+fn schedule_auto_restart(spec: &mut RestartSpec) -> Option<u64> {
+    let delay = auto_restart_delay(spec.attempts_used)?;
+    spec.next_attempt_at = Some(Instant::now() + delay);
+    Some(delay.as_secs())
 }
 
 struct RuntimeData {
@@ -153,6 +189,259 @@ struct ChatChoice {
     message: ChatMessage,
 }
 
+const CHAT_STREAM_EVENT: &str = "chat-stream";
+const MAX_CHAT_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_CHAT_SSE_EVENT_BYTES: usize = 128 * 1024;
+const SCHEDULED_PROMPT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SCHEDULED_PROMPT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_SCHEDULED_RESPONSE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatStreamChunk {
+    request_id: String,
+    delta: String,
+    done: bool,
+}
+
+fn parse_scheduled_response_body<R: Read>(
+    body: R,
+    content_length: Option<u64>,
+) -> Result<ChatResponse, String> {
+    if content_length.is_some_and(|length| length > MAX_SCHEDULED_RESPONSE_BYTES) {
+        return Err("定时任务模型回复超过 1 MiB 安全上限".to_string());
+    }
+    let mut limited = body.take(MAX_SCHEDULED_RESPONSE_BYTES.saturating_add(1));
+    let mut bytes = Vec::new();
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("读取定时任务模型回复失败：{error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SCHEDULED_RESPONSE_BYTES {
+        return Err("定时任务模型回复超过 1 MiB 安全上限".to_string());
+    }
+    serde_json::from_slice(&bytes).map_err(|error| format!("无法解析模型回复：{error}"))
+}
+
+#[cfg(test)]
+mod scheduled_prompt_response_tests {
+    use super::{parse_scheduled_response_body, MAX_SCHEDULED_RESPONSE_BYTES};
+    use std::io::Cursor;
+
+    #[test]
+    fn parses_bounded_scheduled_model_response() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"完成"}}]}"#;
+        let response = parse_scheduled_response_body(Cursor::new(body.as_bytes()), None).unwrap();
+        assert_eq!(response.choices[0].message.content, "完成");
+    }
+
+    #[test]
+    fn rejects_advertised_oversized_scheduled_response() {
+        let error = parse_scheduled_response_body(
+            Cursor::new(b"{}"),
+            Some(MAX_SCHEDULED_RESPONSE_BYTES + 1),
+        )
+        .unwrap_err();
+        assert!(error.contains("1 MiB"));
+    }
+
+    #[test]
+    fn rejects_oversized_scheduled_response_without_length_header() {
+        let body = vec![b'x'; MAX_SCHEDULED_RESPONSE_BYTES as usize + 1];
+        let error = parse_scheduled_response_body(Cursor::new(body), None).unwrap_err();
+        assert!(error.contains("1 MiB"));
+    }
+}
+
+fn parse_chat_sse_data(data: &str) -> Result<(String, bool), String> {
+    let data = data.trim();
+    if data == "[DONE]" {
+        return Ok((String::new(), true));
+    }
+    let payload: serde_json::Value =
+        serde_json::from_str(data).map_err(|error| format!("无法解析本地模型流式数据：{error}"))?;
+    if let Some(error) = payload.get("error") {
+        let detail = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| error.to_string());
+        return Err(format!("本机 llama-server 返回错误：{detail}"));
+    }
+    let choice = payload
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|choices| choices.first());
+    let content = choice
+        .and_then(|choice| choice.get("delta"))
+        .and_then(|delta| delta.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            choice
+                .and_then(|choice| choice.get("message"))
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            choice
+                .and_then(|choice| choice.get("text"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or_default();
+    Ok((content.to_string(), false))
+}
+
+fn dispatch_chat_sse_data<F>(
+    data: &str,
+    total_bytes: &mut usize,
+    on_delta: &mut F,
+) -> Result<bool, String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let (delta, done) = parse_chat_sse_data(data)?;
+    if !delta.is_empty() {
+        *total_bytes = total_bytes.saturating_add(delta.len());
+        if *total_bytes > MAX_CHAT_RESPONSE_BYTES {
+            return Err("本地模型回复超过 64 KiB 安全上限，已中止读取".to_string());
+        }
+        on_delta(&delta)?;
+    }
+    Ok(done)
+}
+
+fn process_chat_sse<R, F>(reader: &mut R, mut on_delta: F) -> Result<usize, String>
+where
+    R: BufRead,
+    F: FnMut(&str) -> Result<(), String>,
+{
+    let mut line = Vec::new();
+    let mut event_data = String::new();
+    let mut total_bytes = 0usize;
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| format!("读取本机模型流式回复失败：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        let line = std::str::from_utf8(&line)
+            .map_err(|error| format!("本地模型流包含无效 UTF-8：{error}"))?;
+        if line.is_empty() {
+            if !event_data.is_empty() {
+                let data = std::mem::take(&mut event_data);
+                if dispatch_chat_sse_data(&data, &mut total_bytes, &mut on_delta)? {
+                    return Ok(total_bytes);
+                }
+            }
+        } else if let Some(data) = line.strip_prefix("data:") {
+            if !event_data.is_empty() {
+                event_data.push('\n');
+            }
+            event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+            if event_data.len() > MAX_CHAT_SSE_EVENT_BYTES {
+                return Err("本地模型 SSE 事件超过安全上限".to_string());
+            }
+        }
+    }
+    if !event_data.is_empty() {
+        dispatch_chat_sse_data(&event_data, &mut total_bytes, &mut on_delta)?;
+    }
+    Ok(total_bytes)
+}
+
+#[cfg(test)]
+mod chat_stream_tests {
+    use super::{parse_chat_sse_data, process_chat_sse, MAX_CHAT_RESPONSE_BYTES};
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn streams_utf8_deltas_and_stops_at_done() {
+        let input = r#"data: {"choices":[{"delta":{"role":"assistant"},"index":0}]}
+
+data: {"choices":[{"delta":{"content":"你"},"index":0}]}
+
+data: {"choices":[{"delta":{"content":"好"},"index":0}]}
+
+data: [DONE]
+
+"#;
+        let mut reader = BufReader::new(Cursor::new(input.as_bytes()));
+        let mut output = String::new();
+        let bytes = process_chat_sse(&mut reader, |delta| {
+            output.push_str(delta);
+            Ok(())
+        })
+        .expect("合成 SSE 应解析成功");
+        assert_eq!(output, "你好");
+        assert_eq!(bytes, "你好".len());
+    }
+
+    #[test]
+    fn surfaces_server_errors() {
+        let error = parse_chat_sse_data(r#"{"error":{"message":"context too long"}}"#)
+            .expect_err("服务端错误应传递给调用方");
+        assert!(error.contains("context too long"));
+    }
+
+    #[test]
+    fn enforces_reply_size_limit() {
+        let payload = serde_json::json!({
+            "choices": [{ "delta": { "content": "x".repeat(MAX_CHAT_RESPONSE_BYTES + 1) } }]
+        });
+        let input = format!("data: {}\n\n", payload);
+        let mut reader = BufReader::new(Cursor::new(input.as_bytes()));
+        let error = process_chat_sse(&mut reader, |_| Ok(())).expect_err("超过上限的回复应被中止");
+        assert!(error.contains("64 KiB"));
+    }
+}
+
+#[cfg(test)]
+mod update_and_recovery_tests {
+    use super::{auto_restart_delay, compare_release_versions, GitHubRelease, MAX_AUTO_RESTARTS};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn compares_numeric_release_components() {
+        assert_eq!(
+            compare_release_versions("0.2.10", "0.2.9"),
+            Ok(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_release_versions("1.0.0", "1.0"),
+            Ok(Ordering::Equal)
+        );
+        assert_eq!(
+            compare_release_versions("0.2.0", "0.2.1"),
+            Ok(Ordering::Less)
+        );
+        assert!(compare_release_versions("latest", "0.2.1").is_err());
+    }
+
+    #[test]
+    fn automatic_restart_uses_finite_increasing_backoff() {
+        assert_eq!(auto_restart_delay(0).unwrap().as_secs(), 1);
+        assert_eq!(auto_restart_delay(1).unwrap().as_secs(), 3);
+        assert_eq!(auto_restart_delay(2).unwrap().as_secs(), 8);
+        assert_eq!(auto_restart_delay(MAX_AUTO_RESTARTS), None);
+    }
+
+    #[test]
+    fn missing_release_notes_are_accepted() {
+        let release: GitHubRelease = serde_json::from_str(
+            r#"{"tag_name":"v0.2.2","html_url":"https://github.com/sincalaway/locm/releases/tag/v0.2.2","body":null}"#,
+        )
+        .expect("GitHub allows an empty/null release description");
+        assert_eq!(release.body, None);
+    }
+}
+
 #[tauri::command]
 fn engine_statuses() -> Result<Vec<engine_manager::EngineStatus>, String> {
     engine_manager::desktop_statuses().map_err(|error| error.to_string())
@@ -176,11 +465,12 @@ async fn engine_install(
     app: AppHandle,
     engine: String,
     allow_prerelease: bool,
+    expected_tag: String,
 ) -> Result<Vec<engine_manager::EngineStatus>, String> {
     let progress_engine = canonical_engine_id(&engine).to_string();
     tauri::async_runtime::spawn_blocking(move || {
         let event_app = app.clone();
-        engine_manager::desktop_install(&engine, allow_prerelease, move |event| {
+        engine_manager::desktop_install(&engine, allow_prerelease, &expected_tag, move |event| {
             let payload = EngineProgress {
                 engine: progress_engine.clone(),
                 phase: event.phase.to_string(),
@@ -223,6 +513,87 @@ fn save_app_settings(
     settings: desktop_backend::AppSettings,
 ) -> Result<desktop_backend::AppSettings, String> {
     desktop_backend::save_settings(&app, settings)
+}
+
+#[tauri::command]
+async fn check_app_update() -> Result<AppUpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let endpoint = "https://api.github.com/repos/sincalaway/locm/releases/latest";
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(12))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("local-ai-workbench/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|error| format!("无法初始化应用版本查询：{error}"))?;
+        let response = client
+            .get(endpoint)
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| format!("查询 GitHub 应用 Release 失败：{error}"))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > 1024 * 1024)
+        {
+            return Err("应用版本信息响应超过 1 MiB 安全上限".to_string());
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("读取应用版本信息失败：{error}"))?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("应用版本信息响应超过 1 MiB 安全上限".to_string());
+        }
+        let release: GitHubRelease = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("GitHub 应用 Release 格式无效：{error}"))?;
+        let latest_version = release.tag_name.trim().trim_start_matches('v').to_string();
+        let current_version = env!("CARGO_PKG_VERSION").to_string();
+        let update_available = compare_release_versions(&latest_version, &current_version)?
+            == std::cmp::Ordering::Greater;
+        let release_url = reqwest::Url::parse(&release.html_url)
+            .ok()
+            .filter(|url| {
+                url.scheme() == "https"
+                    && url.host_str() == Some("github.com")
+                    && url.path().starts_with("/sincalaway/locm/releases/")
+            })
+            .map(|url| url.to_string())
+            .unwrap_or_else(|| "https://github.com/sincalaway/locm/releases/latest".to_string());
+        let release_notes: String = release
+            .body
+            .unwrap_or_default()
+            .chars()
+            .take(4000)
+            .collect();
+        Ok(AppUpdateInfo {
+            current_version,
+            latest_version,
+            update_available,
+            release_url,
+            release_notes,
+        })
+    })
+    .await
+    .map_err(|error| format!("应用版本查询任务失败：{error}"))?
+}
+
+fn compare_release_versions(left: &str, right: &str) -> Result<std::cmp::Ordering, String> {
+    fn components(version: &str) -> Option<Vec<u64>> {
+        let core = version.split_once('-').map_or(version, |(core, _)| core);
+        let values = core
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        (!values.is_empty() && values.len() <= 4).then_some(values)
+    }
+    let left = components(left).ok_or_else(|| format!("无法识别最新版本号：{left}"))?;
+    let right = components(right).ok_or_else(|| format!("无法识别当前版本号：{right}"))?;
+    let count = left.len().max(right.len());
+    Ok((0..count)
+        .map(|index| left.get(index).copied().unwrap_or(0))
+        .cmp((0..count).map(|index| right.get(index).copied().unwrap_or(0))))
 }
 
 #[tauri::command]
@@ -449,6 +820,24 @@ async fn list_media_models(app: AppHandle) -> Result<Vec<media_backend::MediaMod
 }
 
 #[tauri::command]
+async fn list_generated_images(
+    app: AppHandle,
+) -> Result<Vec<media_backend::GeneratedImage>, String> {
+    tauri::async_runtime::spawn_blocking(move || media_backend::list_generated_images(&app))
+        .await
+        .map_err(|error| format!("读取图片作品清单失败：{error}"))?
+}
+
+#[tauri::command]
+async fn preview_generated_image(app: AppHandle, image_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        media_backend::preview_generated_image(&app, &image_path)
+    })
+    .await
+    .map_err(|error| format!("读取图片预览失败：{error}"))?
+}
+
+#[tauri::command]
 async fn huggingface_media_files(
     repo_id: String,
 ) -> Result<Vec<media_backend::RemoteMediaFile>, String> {
@@ -618,26 +1007,56 @@ fn runtime_status_for(state: &RuntimeState, port: u16) -> Result<RuntimeInfo, St
             .take()
             .unwrap_or_else(|| "本地模型".to_string());
         data.last_error = Some(format!("llama-server 已退出（{status}）。"));
-        let restart_plan = data.restart.as_mut().and_then(|spec| {
-            if spec.enabled && !spec.attempted {
-                spec.attempted = true;
-                Some(spec.clone())
+        let scheduled = data.restart.as_mut().and_then(|spec| {
+            if spec.enabled {
+                schedule_auto_restart(spec).map(|delay| (delay, spec.attempts_used + 1))
             } else {
                 None
             }
         });
-        if let Some(spec) = restart_plan {
-            match spawn_server_ready(&spec.executable, &spec.args, &spec.bind_host, spec.port) {
-                Ok(process) => {
-                    data.child = Some(process);
-                    data.model_name = Some(spec.model_name);
-                    data.last_error = None;
-                }
-                Err(error) => {
-                    data.last_error = Some(format!(
-                        "模型 {exited_name} 崩溃后自动重启失败；已停止自动重试：{error}"
-                    ));
-                }
+        if let Some((delay, attempt)) = scheduled {
+            data.last_error = Some(format!(
+                "模型 {exited_name} 已退出；{delay} 秒后自动重启（第 {attempt}/{MAX_AUTO_RESTARTS} 次）。"
+            ));
+        } else if data.restart.as_ref().is_some_and(|spec| spec.enabled) {
+            data.last_error = Some(format!(
+                "模型 {exited_name} 已退出；自动重启已达到最多 {MAX_AUTO_RESTARTS} 次，停止重试。"
+            ));
+        }
+    }
+    let restart_plan = data.restart.as_mut().and_then(|spec| {
+        let due = spec
+            .next_attempt_at
+            .is_some_and(|deadline| deadline <= Instant::now());
+        if spec.enabled && due && spec.attempts_used < MAX_AUTO_RESTARTS {
+            spec.next_attempt_at = None;
+            spec.attempts_used += 1;
+            Some(spec.clone())
+        } else {
+            None
+        }
+    });
+    if let Some(spec) = restart_plan {
+        match spawn_server_ready(&spec.executable, &spec.args, &spec.bind_host, spec.port) {
+            Ok(process) => {
+                data.child = Some(process);
+                data.model_name = Some(spec.model_name);
+                data.last_error = None;
+            }
+            Err(error) => {
+                let retry = data.restart.as_mut().and_then(|restart| {
+                    schedule_auto_restart(restart).map(|delay| (delay, restart.attempts_used + 1))
+                });
+                data.last_error = Some(match retry {
+                    Some((delay, attempt)) => format!(
+                        "模型 {} 自动重启第 {}/{} 次失败；{delay} 秒后进行第 {attempt} 次尝试：{error}",
+                        spec.model_name, spec.attempts_used, MAX_AUTO_RESTARTS
+                    ),
+                    None => format!(
+                        "模型 {} 自动重启第 {}/{} 次失败；已停止自动重试：{error}",
+                        spec.model_name, spec.attempts_used, MAX_AUTO_RESTARTS
+                    ),
+                });
             }
         }
     }
@@ -722,7 +1141,8 @@ async fn start_local_model(
             bind_host: bind_host.clone(),
             port: settings.api_port,
             enabled: options.auto_restart,
-            attempted: false,
+            attempts_used: 0,
+            next_attempt_at: None,
         });
         Ok(RuntimeInfo {
             running: true,
@@ -879,6 +1299,117 @@ async fn chat_complete(
 }
 
 #[tauri::command]
+async fn chat_stream(
+    app: AppHandle,
+    request_id: String,
+    messages: Vec<ChatMessage>,
+    temperature: f32,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let valid_request_id = !request_id.is_empty()
+            && request_id.len() <= 128
+            && request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+        if !valid_request_id {
+            return Err("聊天请求 ID 无效".to_string());
+        }
+        if messages.is_empty() || messages.len() > 60 {
+            return Err("对话消息数量无效".to_string());
+        }
+        if messages.iter().any(|message| {
+            !matches!(message.role.as_str(), "system" | "user" | "assistant")
+                || message.content.len() > 32_000
+        }) {
+            return Err("消息角色无效或单条内容超过 32 KB".to_string());
+        }
+        if !temperature.is_finite() {
+            return Err("回答随机度必须是有限数值".to_string());
+        }
+        let settings = desktop_backend::load_settings(&app)?;
+        let status = runtime_status_sync(&app, settings.api_port)?;
+        if !status.running {
+            return Err("本地模型尚未启动；请先到“运行”页面启动一个 GGUF 模型".to_string());
+        }
+        let url = format!(
+            "http://{}:{}/v1/chat/completions",
+            status.bind_host, settings.api_port
+        );
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30 * 60))
+            .build()
+            .map_err(|error| format!("无法初始化本机聊天客户端：{error}"))?;
+        let response = client
+            .post(url)
+            .json(&serde_json::json!({
+                "model": "local-model",
+                "messages": messages,
+                "temperature": temperature.clamp(0.0, 2.0),
+                "stream": true
+            }))
+            .send()
+            .map_err(|error| format!("连接本机 llama-server 失败：{error}"))?;
+        let status_code = response.status();
+        if !status_code.is_success() {
+            let body = response
+                .text()
+                .unwrap_or_default()
+                .chars()
+                .take(1000)
+                .collect::<String>();
+            return Err(format!("本机 llama-server 返回 HTTP {status_code}：{body}"));
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !content_type.contains("text/event-stream") {
+            return Err(format!(
+                "本机 llama-server 未返回 SSE 流（Content-Type: {}）",
+                if content_type.is_empty() {
+                    "未知"
+                } else {
+                    &content_type
+                }
+            ));
+        }
+        let request_id_for_events = request_id.clone();
+        let app_for_events = app.clone();
+        let mut reader = BufReader::new(response);
+        let emitted_bytes = process_chat_sse(&mut reader, |delta| {
+            app_for_events
+                .emit(
+                    CHAT_STREAM_EVENT,
+                    ChatStreamChunk {
+                        request_id: request_id_for_events.clone(),
+                        delta: delta.to_string(),
+                        done: false,
+                    },
+                )
+                .map_err(|error| format!("无法向聊天界面发送流式内容：{error}"))
+        })?;
+        if emitted_bytes == 0 {
+            return Err("本机 llama-server 没有返回文本内容".to_string());
+        }
+        app.emit(
+            CHAT_STREAM_EVENT,
+            ChatStreamChunk {
+                request_id,
+                delta: String::new(),
+                done: true,
+            },
+        )
+        .map_err(|error| format!("无法向聊天界面发送完成状态：{error}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("本机流式对话任务失败：{error}"))?
+}
+
+#[tauri::command]
 fn load_chat_sessions(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
     desktop_backend::load_chat_sessions(&app)
 }
@@ -900,8 +1431,41 @@ fn create_scheduled_task(
     prompt: String,
     scheduled_at_ms: i64,
     recurrence: schedule_backend::Recurrence,
+    interval_minutes: Option<u32>,
+    notify: bool,
 ) -> Result<schedule_backend::ScheduledTask, String> {
-    schedule_backend::create(&app, title, prompt, scheduled_at_ms, recurrence)
+    schedule_backend::create(
+        &app,
+        title,
+        prompt,
+        scheduled_at_ms,
+        recurrence,
+        interval_minutes,
+        notify,
+    )
+}
+
+#[tauri::command]
+fn list_push_channels(
+    state: tauri::State<'_, schedule_backend::PushChannelState>,
+) -> Result<Vec<schedule_backend::PushChannelSummary>, String> {
+    state.summaries()
+}
+
+#[tauri::command]
+fn save_push_channel(
+    state: tauri::State<'_, schedule_backend::PushChannelState>,
+    channel: schedule_backend::PushChannelConfig,
+) -> Result<Vec<schedule_backend::PushChannelSummary>, String> {
+    state.save_channel(channel)
+}
+
+#[tauri::command]
+fn delete_push_channel(
+    state: tauri::State<'_, schedule_backend::PushChannelState>,
+    id: String,
+) -> Result<Vec<schedule_backend::PushChannelSummary>, String> {
+    state.delete_channel(&id)
 }
 
 #[tauri::command]
@@ -929,7 +1493,12 @@ fn execute_scheduled_prompt(app: &AppHandle, prompt: &str) -> Result<String, Str
     if !status.running {
         return Err("当前没有运行中的本地模型".to_string());
     }
-    let response = reqwest::blocking::Client::new()
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(SCHEDULED_PROMPT_CONNECT_TIMEOUT)
+        .timeout(SCHEDULED_PROMPT_TIMEOUT)
+        .build()
+        .map_err(|error| format!("无法初始化定时任务推理客户端：{error}"))?;
+    let response = client
         .post(format!(
             "http://{}:{}/v1/chat/completions",
             status.bind_host, settings.api_port
@@ -943,15 +1512,24 @@ fn execute_scheduled_prompt(app: &AppHandle, prompt: &str) -> Result<String, Str
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| format!("本地推理请求失败：{error}"))?;
-    let result: ChatResponse = response
-        .json()
-        .map_err(|error| format!("无法解析模型回复：{error}"))?;
+    let content_length = response.content_length();
+    let result = parse_scheduled_response_body(response, content_length)?;
     result
         .choices
         .into_iter()
         .next()
         .map(|choice| choice.message.content)
         .ok_or_else(|| "模型未返回回复内容".to_string())
+}
+
+fn notify_scheduled_task(
+    app: &AppHandle,
+    title: &str,
+    status: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let channels = app.state::<schedule_backend::PushChannelState>();
+    schedule_backend::send_task_notification(&channels, title, status, summary)
 }
 
 fn locate_llama_server(statuses: &[engine_manager::EngineStatus]) -> Result<PathBuf, String> {
@@ -1023,6 +1601,7 @@ fn main() {
         .manage(RuntimeState::default())
         .manage(ModelDownloadState::default())
         .manage(MediaGenerationState::default())
+        .manage(schedule_backend::PushChannelState::default())
         .manage(schedule_stop.clone())
         .invoke_handler(tauri::generate_handler![
             engine_statuses,
@@ -1052,20 +1631,27 @@ fn main() {
             huggingface_files,
             download_huggingface_model,
             list_media_models,
+            list_generated_images,
+            preview_generated_image,
             huggingface_media_files,
             download_media_model_bundle,
             generate_media,
             cancel_media_generation,
             cancel_huggingface_download,
             server_capabilities,
+            check_app_update,
             runtime_status,
             start_local_model,
             stop_local_model,
             chat_complete,
+            chat_stream,
             load_chat_sessions,
             save_chat_sessions,
             list_scheduled_tasks,
             create_scheduled_task,
+            list_push_channels,
+            save_push_channel,
+            delete_push_channel,
             set_scheduled_task_enabled,
             delete_scheduled_task
         ])
@@ -1075,6 +1661,7 @@ fn main() {
                 app.handle().clone(),
                 setup_schedule_stop,
                 execute_scheduled_prompt,
+                notify_scheduled_task,
             );
             Ok(())
         })

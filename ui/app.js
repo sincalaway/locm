@@ -17,6 +17,8 @@
     enginesLoaded: false,
     mediaInstallSupported: false,
     mediaInstallBusy: false,
+    engineInstallBusy: new Set(),
+    engineInstallMessages: new Map(),
     models: [],
     recommendationCategory: "fit",
     recommendationSeq: 0,
@@ -25,23 +27,28 @@
     hfSearchSeq: 0,
     currentDownloadId: null,
     mediaModels: [],
+    generatedImages: [],
+    selectedImagePath: null,
+    imagePreviewSequence: 0,
     mediaGenerationJobId: null,
     mediaGenerationKind: null,
     comfyuiScan: null,
     comfyuiScanPath: null,
     comfyuiScanError: "",
     pendingRunModel: null,
-    runtime: { running: false, port: 8686, modelName: null },
+    runtime: { running: false, port: 8666, modelName: null },
     runCapabilities: null,
     runCapabilitiesLoading: null,
     runPreferences: loadRunPreferences(),
     samples: [],
     modelProcesses: [],
     scheduledTasks: [],
+    pushChannels: [],
     sessions: loadSessions(),
     currentSessionId: loadCurrentSessionId(),
     busyChat: false,
     busySessionId: null,
+    chatStream: null,
     draftAttachments: [],
     chatPreferences: loadChatPreferences(),
     chatPersistenceAvailable: false,
@@ -90,9 +97,10 @@
       renderMediaEngineBanners();
       refreshMediaModels();
     }
+    if (safePage === "image") loadGeneratedImages();
     if (safePage === "chat") { renderChat(); refreshRuntime(); }
     if (safePage === "monitor") { drawChart(); refreshSystem(); refreshRuntime(); }
-    if (safePage === "schedule") loadScheduledTasks();
+    if (safePage === "schedule") { loadScheduledTasks(); loadPushChannels(); }
     if (safePage === "settings") loadSettings();
   }
 
@@ -289,7 +297,7 @@
     active.push(`Flash Attention ${effective.flashAttention}`);
     if (effective.kvCacheQ8) active.push("K/V 缓存 q8_0");
     active.push(effective.lanAccess ? "私有 IPv4 局域网绑定" : "仅 127.0.0.1");
-    if (effective.autoRestart) active.push("崩溃后最多自动重启一次");
+    if (effective.autoRestart) active.push("崩溃后最多自动重启 3 次（1/3/8 秒退避）");
     $("#run-effective-options").textContent = `当前设置：${active.join("；")}。思考行为不强制覆盖模型模板。`;
     $("#start-model").disabled = Boolean(state.runtime.running) || !$("#run-model-select").value || !capabilities?.host || !capabilities?.port;
   }
@@ -353,17 +361,24 @@
     const hw = state.hardware;
     const totalBytes = Number(hw?.totalMemoryBytes) || 0;
     const availableBytes = Number(hw?.availableMemoryBytes) || 0;
+    const physicalCores = Number(hw?.physicalCores) || 0;
     const logicalCores = Number(hw?.logicalCores) || 0;
     $("#hardware-cpu").textContent = hw?.cpuName || "未检测到处理器信息";
-    $("#hardware-cores").textContent = logicalCores
-      ? `${logicalCores} 个逻辑处理器 · ${hw.os || "系统未知"} · ${hw.architecture || "架构未知"}`
-      : `处理器核心数未知 · ${hw?.os || "系统未知"} · ${hw?.architecture || "架构未知"}`;
+    const coreSummary = physicalCores && logicalCores
+      ? `${physicalCores} 个物理核心 · ${logicalCores} 个逻辑处理器`
+      : logicalCores ? `${logicalCores} 个逻辑处理器 · 物理核心数未知` : "处理器核心数未知";
+    $("#hardware-cores").textContent = `${coreSummary} · ${hw?.os || "系统未知"} · ${hw?.architecture || "架构未知"}`;
     $("#hardware-memory").textContent = totalBytes > 0 ? fmtBytes(totalBytes) : "内存容量未知";
     $("#memory-free").textContent = totalBytes > 0 ? `可用 ${fmtBytes(availableBytes)}` : "可用内存未知";
     $("#hardware-gpu").textContent = hw?.gpuName || "未检测到可用图形设备信息";
-    $("#gpu-memory").textContent = Number(hw?.gpuMemoryBytes) > 0
-      ? `显存 ${fmtBytes(Number(hw.gpuMemoryBytes))}`
-      : "显存容量未知；当前版本未提供 GPU 加速选择";
+    const gpuMemoryBytes = Number(hw?.gpuMemoryBytes) || 0;
+    const gpuMemoryUsedBytes = hw?.gpuMemoryUsedBytes == null ? null : Number(hw.gpuMemoryUsedBytes);
+    const gpuMemoryDetail = gpuMemoryBytes > 0
+      ? `显存总量 ${fmtBytes(gpuMemoryBytes)} · ${gpuMemoryUsedBytes !== null && Number.isFinite(gpuMemoryUsedBytes) ? `已用 ${fmtBytes(gpuMemoryUsedBytes)}` : "已用未知"}`
+      : gpuMemoryUsedBytes !== null && Number.isFinite(gpuMemoryUsedBytes)
+        ? `显存总量未知 · 已用 ${fmtBytes(gpuMemoryUsedBytes)}`
+        : "显存总量 / 已用未知";
+    $("#gpu-memory").textContent = gpuMemoryDetail;
     $("#overview-headline").textContent = hw?.gpuName
       ? `识别到图形设备：${hw.gpuName}`
       : "图形设备信息未检测到";
@@ -415,10 +430,32 @@
   }
 
   function renderOverviewRecommendation() {
+    const totalBytes = Number(state.hardware?.totalMemoryBytes) || 0;
     const availableBytes = Number(state.hardware?.availableMemoryBytes) || 0;
-    $("#overview-recommendation-copy").textContent = availableBytes > 0
-      ? `本机当前检测到 ${fmtBytes(availableBytes)} 可用内存。先比较 GGUF 量化文件大小并为上下文与运行开销留余量；文件大小不等于运行内存，本机速度尚未实测。`
-      : "未检测到可用内存信息，暂不能给出本机适配判断。可浏览模型，但请先核对文件大小和运行需求。";
+    const gib = 1024 ** 3;
+    const tier = totalBytes >= 32 * gib
+      ? { label: "进阶配置", plan: "可从 14B 级 Q4 GGUF 开始筛选，再按上下文长度和实际占用调整。" }
+      : totalBytes >= 16 * gib
+        ? { label: "均衡配置", plan: "优先比较 7B–14B 级 Q4 GGUF，并从较短上下文开始。" }
+        : totalBytes >= 8 * gib
+          ? { label: "轻量配置", plan: "优先比较 3B–8B 级 Q4 GGUF，避免一开始使用过长上下文。" }
+          : totalBytes > 0
+            ? { label: "基础配置", plan: "优先比较 1B–3B 级 Q4 GGUF，并保持较短上下文。" }
+            : { label: "暂无法分层", plan: "未检测到系统内存总量，暂不能给出本机适配档位。" };
+    $("#overview-tier-badge").textContent = tier.label;
+    if (totalBytes <= 0) {
+      $("#overview-recommendation-copy").textContent = `${tier.plan} 可先浏览模型，但请核对文件大小与运行要求；本机速度尚未实测。`;
+      return;
+    }
+    const reservedBytes = 2 * gib;
+    const budgetBytes = availableBytes > reservedBytes ? availableBytes - reservedBytes : 0;
+    const budgetNote = budgetBytes > 0
+      ? `以当前可用内存 ${fmtBytes(availableBytes)} 初筛时，可优先关注文件约 ${fmtBytes(budgetBytes)} 以下的模型（预留约 2 GiB 给系统与运行开销）。`
+      : `当前可用内存为 ${fmtBytes(availableBytes)}，低于约 2 GiB 的保守预留值；建议先释放内存再比较模型。`;
+    const gpuNote = state.hardware?.gpuName
+      ? `已识别图形设备 ${state.hardware.gpuName}，但当前本地推理引擎是 CPU 版，规划不把显存计入可用系统内存。`
+      : "未取得图形设备信息；当前规划仅依据系统内存，不推断 GPU 加速能力。";
+    $("#overview-recommendation-copy").textContent = `${tier.plan} ${budgetNote} ${gpuNote} 以上仅作筛选起点；模型文件大小不等于运行内存，也不保证兼容或速度。`;
   }
 
   function updateQuickstart() {
@@ -428,6 +465,12 @@
     const chatEngine = state.engines.get("llama.cpp");
     const engineReady = Boolean(chatEngine?.installedVersions?.length);
     const modelCount = state.models.length;
+    const engineBusy = state.engineInstallBusy.has("chat");
+    const engineAction = $("#quickstep-engine-action");
+    if (engineAction) {
+      engineAction.disabled = engineBusy || (!engineReady && (!state.enginesLoaded || !state.mediaInstallSupported));
+      engineAction.textContent = engineBusy ? "安装中…" : !state.enginesLoaded ? "读取状态…" : engineReady ? "管理引擎" : state.mediaInstallSupported ? "一键安装" : "暂不可安装";
+    }
     const activeStep = !hardwareReady ? "hardware" : !engineReady ? "engine" : modelCount === 0 ? "models" : null;
     const updateStep = (name, complete, message) => {
       const step = $(`[data-quick-step="${name}"]`);
@@ -439,7 +482,8 @@
       step.querySelector("small").textContent = message;
     };
     updateStep("hardware", hardwareReady, hardwareReady ? "本机硬件信息已读取" : "硬件信息尚未读取");
-    updateStep("engine", engineReady, engineReady ? "llama.cpp 已安装" : state.enginesLoaded ? "需要安装 llama.cpp 推理引擎" : "正在读取引擎安装状态…");
+    const engineMessage = state.engineInstallMessages.get("chat");
+    updateStep("engine", engineReady, engineBusy ? (engineMessage || "正在准备安装…") : engineReady ? "llama.cpp 已安装" : state.enginesLoaded ? (state.mediaInstallSupported ? "安装前会展示版本、大小和官方来源" : "当前平台暂不可自动安装") : "正在读取引擎安装状态…");
     updateStep("models", modelCount > 0, modelCount ? `已找到 ${modelCount} 个本地 GGUF 模型` : "导入 GGUF 或从模型库下载");
   }
   async function loadHardware() {
@@ -473,7 +517,7 @@
       <p class="engine-description">${extra}。运行时来自官方 GitHub Releases 并在安装前校验 SHA-256。</p>
       <div class="engine-meta"><div class="metadata-row"><span>已安装版本</span><strong>${installed.length ? installed.map((version) => escapeText(version.tag)).join("、") : "暂无"}</strong></div><div class="metadata-row path-row"><span>目录</span><code title="${escapeText(status?.installPath || "")}">${escapeText(status?.installPath || "读取中…")}</code></div></div>
       <div class="release-box" data-release hidden></div><div class="engine-progress" data-progress hidden></div><div class="engine-error" data-error hidden></div>
-      <div class="engine-actions"><button class="button secondary" data-engine-action="check">检查官方版本</button><button class="button primary" data-engine-action="install" disabled>先检查版本</button></div>
+      <div class="engine-actions"><button class="button secondary" data-engine-action="check">检查官方版本</button><button class="button primary" data-engine-action="install">${installed.length ? "检查并更新" : "一键安装"}</button></div>
     </article>`;
   }
 
@@ -641,6 +685,8 @@
     fillMediaSelect($("#video-high-noise-select"), "无 / 单专家模型");
     fillMediaSelect($("#video-vae-select"), "选择 Wan VAE…");
     fillMediaSelect($("#video-text-select"), "选择 T5-XXL 文本编码器…");
+    const guidance = $("#image-model-guidance");
+    if (guidance) guidance.hidden = mediaInventory().length > 0;
     updateMediaResourceStatus("image");
     updateMediaResourceStatus("video");
   }
@@ -725,83 +771,152 @@
     finally { button.disabled = false; }
   }
 
-  async function installMediaEngine() {
-    if (state.mediaInstallBusy) return;
-    if (!state.mediaInstallSupported) { showToast("此平台暂不支持自动安装引擎", "error"); return; }
-    state.mediaInstallBusy = true;
-    let failure = "";
-    ["image", "video"].forEach((page) => {
-      const progress = $(`#${page}-engine-progress`);
-      if (progress) { progress.hidden = false; progress.textContent = "正在查询 stable-diffusion.cpp 官方版本…"; }
-      const error = $(`#${page}-engine-error`);
-      if (error) error.hidden = true;
-    });
-    renderMediaEngineBanners();
-    try {
-      const latest = await invoke("engine_latest", { engine: "media" });
-      const installedVersions = state.engines.get("stable-diffusion.cpp")?.installedVersions || [];
-      if (installedVersions.some((version) => version.tag === latest.tag)) {
-        showToast(`stable-diffusion.cpp ${latest.tag} 已安装；可在“运行”页管理版本`);
-        return;
+  function canonicalEngineId(engine) {
+    return engine === "chat" ? "llama.cpp" : "stable-diffusion.cpp";
+  }
+
+  function refreshEngineActionButtons() {
+    $$(".engine-card").forEach((card) => {
+      const engine = card.dataset.engine === "llama.cpp" ? "chat" : "media";
+      const installed = state.engines.get(card.dataset.engine)?.installedVersions || [];
+      const busy = state.engineInstallBusy.has(engine);
+      const check = $("[data-engine-action=check]", card);
+      const install = $("[data-engine-action=install]", card);
+      if (check) check.disabled = busy;
+      if (install) {
+        install.disabled = busy || !state.mediaInstallSupported;
+        install.textContent = busy ? "正在安装…" : installed.length ? "检查并更新" : "一键安装";
       }
-      if (latest.prerelease && !window.confirm("官方最新版本是预览版。是否继续安装？")) return;
+    });
+  }
+
+  function renderEngineRelease(card, latest) {
+    if (!card) return;
+    const box = $("[data-release]", card);
+    const install = $("[data-engine-action=install]", card);
+    box.hidden = false;
+    box.replaceChildren();
+    const version = document.createElement("strong");
+    version.textContent = `${latest.tag}${latest.prerelease ? " · 官方预览版" : ""}`;
+    const detail = document.createElement("small");
+    detail.textContent = `${fmtBytes(Number(latest.sizeBytes))} · ${latest.assetName}`;
+    const digest = document.createElement("code");
+    digest.textContent = `SHA-256 ${latest.sha256 || "未提供"}`;
+    const link = document.createElement("a");
+    link.href = latest.releaseUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "查看官方 Release";
+    box.append(version, detail, digest, link);
+    const engineId = card.dataset.engine;
+    const installed = (state.engines.get(engineId)?.installedVersions || []).some((item) => item.tag === latest.tag);
+    if (install) {
+      install.disabled = !state.mediaInstallSupported || state.engineInstallBusy.has(engineId === "llama.cpp" ? "chat" : "media") || installed;
+      install.textContent = installed ? "最新版本已安装" : latest.prerelease ? "安装此预览版" : "安装此版本";
+    }
+  }
+
+  function setEngineInstallMessage(engine, message) {
+    state.engineInstallMessages.set(engine, message);
+    const engineId = canonicalEngineId(engine);
+    $$(".engine-card").filter((card) => card.dataset.engine === engineId).forEach((card) => {
+      const progress = $("[data-progress]", card);
+      if (progress) { progress.hidden = false; progress.textContent = message; }
+    });
+    if (engine === "media") {
       ["image", "video"].forEach((page) => {
         const progress = $(`#${page}-engine-progress`);
-        if (progress) progress.textContent = `正在安装 ${latest.tag}…`;
+        if (progress) { progress.hidden = false; progress.textContent = message; }
       });
-      const statuses = await invoke("engine_install", { engine: "media", allowPrerelease: Boolean(latest.prerelease) });
+    }
+    if (engine === "chat") updateQuickstart();
+  }
+
+  function engineInstallConfirmation(latest) {
+    const size = Number(latest.sizeBytes);
+    const sizeLabel = Number.isFinite(size) && size > 0 ? fmtBytes(size) : "大小未知";
+    const releaseType = latest.prerelease ? "官方预览版" : "官方版本";
+    return `将从官方 GitHub Releases 安装 ${latest.engine} ${latest.tag}（${releaseType}）。\n\n安装包：${latest.assetName}\n大小：${sizeLabel}\nSHA-256：${latest.sha256}\n来源：${latest.releaseUrl}\n\n继续下载并校验引擎？这不会下载模型权重，也不会自动启动引擎。`;
+  }
+
+  async function installEngineFromLatest(engine, card = null) {
+    if (state.engineInstallBusy.has(engine)) return;
+    if (!state.mediaInstallSupported) { showToast("此平台暂不支持自动安装引擎", "error"); return; }
+    state.engineInstallBusy.add(engine);
+    if (engine === "media") state.mediaInstallBusy = true;
+    const errorBox = card ? $("[data-error]", card) : null;
+    if (errorBox) errorBox.hidden = true;
+    setEngineInstallMessage(engine, "正在查询官方版本；尚未开始下载…");
+    refreshEngineActionButtons();
+    renderMediaEngineBanners();
+    let failure = "";
+    let installed = false;
+    try {
+      const latest = await invoke("engine_latest", { engine });
+      renderEngineRelease(card, latest);
+      const current = state.engines.get(canonicalEngineId(engine))?.installedVersions || [];
+      if (current.some((version) => version.tag === latest.tag)) {
+        setEngineInstallMessage(engine, `${latest.tag} 已安装；未下载文件。`);
+        showToast(`${latest.engine} ${latest.tag} 已安装`);
+        return;
+      }
+      const size = Number(latest.sizeBytes);
+      if (!Number.isFinite(size) || size <= 0) throw new Error("官方发布未提供可核验的安装包大小，拒绝下载");
+      if (!/^[0-9a-f]{64}$/i.test(String(latest.sha256 || ""))) throw new Error("官方发布未提供有效 SHA-256，拒绝下载");
+      setEngineInstallMessage(engine, `已找到 ${latest.tag} · ${fmtBytes(size)}；等待确认…`);
+      if (!window.confirm(engineInstallConfirmation(latest))) {
+        setEngineInstallMessage(engine, "已取消；未下载引擎或模型。");
+        showToast("已取消；没有下载引擎或模型");
+        return;
+      }
+      setEngineInstallMessage(engine, `正在下载 ${latest.tag} · ${fmtBytes(size)}；不会下载模型权重…`);
+      const statuses = await invoke("engine_install", {
+        engine,
+        allowPrerelease: Boolean(latest.prerelease),
+        expectedTag: latest.tag,
+      });
       state.engines = new Map(statuses.map((item) => [item.engine, item]));
-      showToast(`stable-diffusion.cpp ${latest.tag} 已安装；引擎尚未启动`);
-      await loadEngines();
+      installed = true;
+      setEngineInstallMessage(engine, `${latest.tag} 已安装并完成 SHA-256 校验；引擎尚未启动。`);
+      showToast(`${latest.engine} ${latest.tag} 已安装；引擎尚未启动`);
     } catch (error) {
       failure = String(error);
-      showToast(`创作引擎安装失败：${error}`, "error");
+      if (errorBox) { errorBox.textContent = `安装失败：${failure}`; errorBox.hidden = false; }
+      setEngineInstallMessage(engine, `安装未完成：${failure}`);
+      showToast(`引擎安装失败：${failure}`, "error");
     } finally {
-      state.mediaInstallBusy = false;
-      renderMediaEngineBanners(failure);
+      state.engineInstallBusy.delete(engine);
+      state.engineInstallMessages.delete(engine);
+      state.mediaInstallBusy = state.engineInstallBusy.has("media");
+      refreshEngineActionButtons();
+      updateQuickstart();
+      renderMediaEngineBanners(engine === "media" ? failure : "");
     }
+    if (installed) {
+      await loadEngines();
+      if (engine === "chat") await loadRunCapabilities(true);
+    }
+  }
+
+  async function installMediaEngine() {
+    return installEngineFromLatest("media");
   }
 
   function wireEngineCard(card, installSupported) {
     const engine = card.dataset.engine === "llama.cpp" ? "chat" : "media";
     const check = $("[data-engine-action=check]", card);
     const install = $("[data-engine-action=install]", card);
-    const releaseBox = $("[data-release]", card);
     const errorBox = $("[data-error]", card);
-    let latest = null;
+    check.disabled = state.engineInstallBusy.has(engine);
+    install.disabled = !installSupported || state.engineInstallBusy.has(engine);
     check.addEventListener("click", async () => {
       check.disabled = true; check.textContent = "正在查询…"; errorBox.hidden = true;
       try {
-        latest = await invoke("engine_latest", { engine });
-        releaseBox.hidden = false;
-        releaseBox.replaceChildren();
-        const version = document.createElement("strong");
-        version.textContent = `${latest.tag}${latest.prerelease ? " · 官方预览版" : ""}`;
-        const detail = document.createElement("small");
-        detail.textContent = `${fmtBytes(latest.sizeBytes)} · ${latest.assetName}`;
-        const link = document.createElement("a");
-        link.href = latest.releaseUrl; link.target = "_blank"; link.rel = "noreferrer"; link.textContent = "查看官方 Release";
-        releaseBox.append(version, detail, link);
+        const latest = await invoke("engine_latest", { engine });
+        renderEngineRelease(card, latest);
         const already = (state.engines.get(card.dataset.engine)?.installedVersions || []).some((item) => item.tag === latest.tag);
         install.disabled = !installSupported || already;
-        install.textContent = already ? "当前版本已安装" : (engine === "chat" && latest.prerelease ? "安装此预览版" : "安装 / 更新");
       } catch (error) { errorBox.textContent = `版本查询失败：${error}`; errorBox.hidden = false; }
-      finally { check.disabled = false; check.textContent = "检查官方版本"; }
+      finally { check.disabled = state.engineInstallBusy.has(engine); check.textContent = "检查官方版本"; }
     });
-    install.addEventListener("click", async () => {
-      if (!latest || !installSupported) return;
-      if (latest.prerelease && !window.confirm("此为官方预览版。是否继续安装？")) return;
-      install.disabled = true; install.textContent = "正在安装…"; errorBox.hidden = true;
-      const progress = $("[data-progress]", card); progress.hidden = false; progress.textContent = "正在下载官方压缩包…";
-      try {
-        const statuses = await invoke("engine_install", { engine, allowPrerelease: Boolean(latest.prerelease) });
-        state.engines = new Map(statuses.map((item) => [item.engine, item]));
-        progress.textContent = "安装并 SHA-256 校验完成；引擎尚未启动。";
-        showToast(`${latest.engine} ${latest.tag} 已安装`);
-        await loadEngines();
-        if (engine === "chat") await loadRunCapabilities(true);
-      } catch (error) { errorBox.textContent = `安装失败：${error}`; errorBox.hidden = false; install.disabled = false; install.textContent = "重试安装"; }
-    });
+    install.addEventListener("click", () => installEngineFromLatest(engine, card));
   }
 
   async function loadModels() {
@@ -1320,8 +1435,12 @@
     if (!Number.isFinite(Number(value)) || Number(value) <= 0) return "时间未知";
     return new Date(Number(value)).toLocaleString();
   }
-  function recurrenceLabel(value) {
-    return value === "hourly" ? "每小时" : (value === "daily" ? "每 24 小时" : "仅一次");
+  function recurrenceLabel(value, intervalMinutes) {
+    if (value === "hourly") return "每小时";
+    if (value === "daily") return "每天（每 24 小时）";
+    if (value === "weekly") return "每周（每 7 天）";
+    if (value === "interval") return `每 ${Number(intervalMinutes) || 0} 分钟`;
+    return "仅一次";
   }
   function defaultScheduleInputTime() {
     const date = new Date(Date.now() + 5 * 60_000);
@@ -1350,7 +1469,7 @@
       status.textContent = finishedOnce ? "已结束" : (task.enabled ? "已启用" : "已暂停");
       heading.append(title, status);
       const timing = document.createElement("p"); timing.className = "schedule-task-timing muted tiny";
-      timing.textContent = `${recurrenceLabel(task.recurrence)} · ${task.nextRunAtMs ? `下次 ${formatLocalDateTime(task.nextRunAtMs)}` : "无待执行时间"}`;
+      timing.textContent = `${recurrenceLabel(task.recurrence, task.intervalMinutes)} · ${task.nextRunAtMs ? `下次 ${formatLocalDateTime(task.nextRunAtMs)}` : "无待执行时间"}${task.notify ? " · 执行后推送" : ""}`;
       const prompt = document.createElement("p"); prompt.className = "schedule-task-prompt";
       prompt.textContent = task.prompt;
       card.append(heading, timing, prompt);
@@ -1407,21 +1526,112 @@
       retry.addEventListener("click", loadScheduledTasks); box.append(failure, retry);
     }
   }
+  const pushChannelLabels = {
+    telegram: "Telegram Bot", serverChan: "微信 · Server 酱", pushPlus: "微信 · PushPlus",
+    dingTalk: "钉钉机器人", feishu: "飞书自定义机器人", bark: "Bark",
+    qqWebhook: "QQ Webhook", webhook: "自定义 Webhook",
+  };
+  function renderPushChannelFields() {
+    const kind = $("#push-channel-kind").value;
+    const fields = $("#push-channel-fields");
+    const specs = {
+      telegram: [{ key: "secret", label: "Bot Token", type: "password", required: true }, { key: "target", label: "Chat ID", type: "text", required: true }],
+      serverChan: [{ key: "secret", label: "SendKey", type: "password", required: true }],
+      pushPlus: [{ key: "secret", label: "Token", type: "password", required: true }],
+      dingTalk: [{ key: "endpoint", label: "自定义机器人 Webhook URL", type: "url", required: true }, { key: "secret", label: "签名密钥（如未启用签名可留空）", type: "password", required: false }],
+      feishu: [{ key: "endpoint", label: "自定义机器人 Webhook URL", type: "url", required: true }],
+      bark: [{ key: "endpoint", label: "服务器地址（如 https://api.day.app）", type: "url", required: true }, { key: "secret", label: "设备 Key", type: "password", required: true }],
+      qqWebhook: [{ key: "endpoint", label: "兼容 JSON 的机器人/中转 Webhook URL", type: "url", required: true }],
+      webhook: [{ key: "endpoint", label: "Webhook URL", type: "url", required: true }],
+    };
+    fields.replaceChildren();
+    (specs[kind] || []).forEach((spec) => {
+      const label = document.createElement("label");
+      label.textContent = spec.label;
+      const input = document.createElement("input");
+      input.type = spec.type; input.name = spec.key; input.required = spec.required;
+      input.autocomplete = spec.type === "password" ? "new-password" : "off";
+      input.maxLength = 4096;
+      if (spec.key === "endpoint") input.placeholder = "https://…";
+      fields.append(label, input);
+    });
+    if (kind === "qqWebhook" || kind === "webhook") {
+      const hint = document.createElement("p"); hint.className = "muted tiny";
+      hint.textContent = "保存时不会访问该地址。发送时使用 POST JSON：{ title, content }。";
+      fields.append(hint);
+    }
+  }
+  function renderPushChannels() {
+    const box = $("#push-channel-list");
+    if (!box) return;
+    box.replaceChildren();
+    $("#push-channel-count").textContent = `${state.pushChannels.length} 个`;
+    if (!state.pushChannels.length) {
+      const empty = document.createElement("p"); empty.className = "empty-state";
+      empty.textContent = "本次应用运行还没有配置通知渠道。添加渠道不会发送测试消息。";
+      box.append(empty); return;
+    }
+    state.pushChannels.forEach((channel) => {
+      const row = document.createElement("div"); row.className = "push-channel-row";
+      const info = document.createElement("div"); info.className = "push-channel-info";
+      const title = document.createElement("strong"); title.textContent = channel.name;
+      const type = document.createElement("small"); type.textContent = pushChannelLabels[channel.kind] || channel.kind;
+      info.append(title, type);
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "button danger"; remove.textContent = "移除";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(`移除通知渠道“${channel.name}”？`)) return;
+        remove.disabled = true;
+        try { await invoke("delete_push_channel", { id: channel.id }); await loadPushChannels(); }
+        catch (error) { showToast(`移除渠道失败：${error}`, "error"); remove.disabled = false; }
+      });
+      row.append(info, remove); box.append(row);
+    });
+  }
+  async function loadPushChannels() {
+    const box = $("#push-channel-list");
+    if (!box) return;
+    try { state.pushChannels = await invoke("list_push_channels"); renderPushChannels(); }
+    catch (error) { box.replaceChildren(); const failure = document.createElement("p"); failure.className = "error-box"; failure.textContent = `读取通知渠道失败：${error}`; box.append(failure); }
+  }
+  async function savePushChannel(event) {
+    event.preventDefault();
+    const form = $("#push-channel-form"); const button = $("#push-channel-save");
+    const read = (name) => form.querySelector(`[name="${name}"]`)?.value.trim() || null;
+    const channel = {
+      id: `push-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      name: $("#push-channel-name").value.trim(), kind: $("#push-channel-kind").value,
+      endpoint: read("endpoint"), secret: read("secret"), target: read("target"),
+    };
+    button.disabled = true; button.textContent = "仅保存在内存…";
+    try {
+      await invoke("save_push_channel", { channel });
+      form.reset(); renderPushChannelFields(); await loadPushChannels();
+      showToast("渠道已加入本次应用运行；没有发送测试消息");
+    } catch (error) { showToast(`保存渠道失败：${error}`, "error"); }
+    finally { button.disabled = false; button.textContent = "仅保存到本次运行"; }
+  }
   async function createScheduledTask(event) {
     event.preventDefault();
     const button = $("#schedule-create");
     const scheduledAtMs = new Date($("#schedule-at").value).getTime();
     if (!Number.isFinite(scheduledAtMs)) { showToast("请选择有效的首次执行时间", "error"); return; }
+    const recurrence = $("#schedule-recurrence").value;
+    const intervalMinutes = recurrence === "interval" ? Number($("#schedule-interval").value) : null;
+    if (recurrence === "interval" && (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 525600)) {
+      showToast("自定义间隔必须是 1 到 525600 之间的整数分钟", "error"); return;
+    }
     button.disabled = true; button.textContent = "正在保存…";
     try {
       await invoke("create_scheduled_task", {
         title: $("#schedule-title").value.trim(),
         prompt: $("#schedule-prompt").value.trim(),
         scheduledAtMs,
-        recurrence: $("#schedule-recurrence").value,
+        recurrence,
+        intervalMinutes,
+        notify: $("#schedule-notify").checked,
       });
       $("#schedule-title").value = ""; $("#schedule-prompt").value = "";
-      $("#schedule-recurrence").value = "once"; $("#schedule-at").value = defaultScheduleInputTime();
+      $("#schedule-recurrence").value = "once"; $("#schedule-interval").value = "60"; $("#schedule-notify").checked = false; $("#schedule-at").value = defaultScheduleInputTime();
       await loadScheduledTasks(); showToast("定时任务已保存到本机");
     } catch (error) { showToast(`创建定时任务失败：${error}`, "error"); }
     finally { button.disabled = false; button.textContent = "创建定时任务"; }
@@ -1482,7 +1692,9 @@
       $("#chat-input").disabled = !state.runtime.running || state.busyChat;
       updateChatSendState();
       $("#chat-hint").textContent = state.runtime.running
-        ? "发送到本机 llama-server；回复为非流式"
+        ? (state.chatStream
+          ? (state.chatStream.message.content ? "正在接收本机 llama-server 的流式回复…" : "正在连接本机 llama-server…")
+          : "发送到本机 llama-server；回复会实时显示")
         : (state.models.length ? "选择模型将启动本机推理服务" : "先导入一个 GGUF 模型");
       $("#monitor-api").textContent = `${host}:${state.runtime.port}`;
       renderMonitorProcesses();
@@ -1614,8 +1826,11 @@
       session.messages.forEach((message, index) => {
         const row = document.createElement("article");
         row.className = `message ${message.role === "user" ? "user" : "assistant"}${message.error ? " message-error" : ""}`;
-        const label = document.createElement("small"); label.textContent = message.error ? "请求失败 · 本地服务" : (message.role === "user" ? "你" : "本地模型");
-        const content = document.createElement("div"); content.className = "message-content"; content.textContent = message.content || "";
+        const label = document.createElement("small");
+        label.textContent = message.error ? "请求失败 · 本地服务" : (message.streaming ? "本地模型 · 正在生成" : (message.role === "user" ? "你" : "本地模型"));
+        const content = document.createElement("div"); content.className = "message-content";
+        content.textContent = message.content || (message.streaming ? "等待本机模型首个文本片段…" : "");
+        if (message.streaming) content.dataset.chatStreamContent = "true";
         row.append(label, content);
         if (message.attachments?.length) {
           const attachmentList = document.createElement("div"); attachmentList.className = "message-attachment-list";
@@ -1644,7 +1859,8 @@
       });
       if (state.busyChat && state.busySessionId === session.id) {
         const loading = document.createElement("div"); loading.className = "typing-indicator";
-        loading.textContent = "本地模型正在生成回复（非流式）…"; pane.append(loading);
+        loading.textContent = state.chatStream?.message.content ? "正在接收流式回复…" : "正在连接本机 llama-server…";
+        pane.append(loading);
       }
     }
     pane.scrollTop = pane.scrollHeight;
@@ -1664,20 +1880,53 @@
     return messages.slice(-60).map(messageToApi);
   }
 
+  function handleChatStream(event) {
+    const payload = event.payload || {};
+    const stream = state.chatStream;
+    if (!stream || payload.requestId !== stream.requestId) return;
+    if (typeof payload.delta === "string" && payload.delta) {
+      stream.message.content += payload.delta;
+      if (state.currentSessionId === stream.sessionId) {
+        const content = $("[data-chat-stream-content='true']", $("#chat-messages"));
+        if (content) {
+          content.textContent = stream.message.content;
+          const pane = $("#chat-messages"); pane.scrollTop = pane.scrollHeight;
+        }
+      }
+      $("#chat-hint").textContent = "正在接收本机 llama-server 的流式回复…";
+    }
+    if (payload.done) stream.done = true;
+  }
+
   async function requestChatReply(session) {
     if (!state.runtime.running) { showToast("请先选择并启动一个本地模型", "error"); return; }
     if (state.busyChat) return;
     state.busyChat = true; state.busySessionId = session.id;
-    renderChat(); await refreshRuntime();
+    let assistantMessage = null;
+    const requestId = globalThis.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     try {
       const messages = apiHistory(session);
-      const result = await invoke("chat_complete", { messages, temperature: state.chatPreferences.temperature });
-      session.messages.push({ role: "assistant", content: String(result), createdAt: Date.now() });
+      assistantMessage = { role: "assistant", content: "", streaming: true, createdAt: Date.now() };
+      session.messages.push(assistantMessage);
+      state.chatStream = { requestId, sessionId: session.id, message: assistantMessage, done: false };
+      renderChat(); await refreshRuntime();
+      $("#chat-hint").textContent = "正在连接本机 llama-server…";
+      await invoke("chat_stream", { requestId, messages, temperature: state.chatPreferences.temperature });
+      if (!assistantMessage.content) throw new Error("本机模型没有生成文本回复");
+      delete assistantMessage.streaming;
       session.updatedAt = Date.now(); saveSessions();
     } catch (error) {
-      session.messages.push({ role: "assistant", content: String(error), error: true, createdAt: Date.now() });
+      if (!assistantMessage) {
+        assistantMessage = { role: "assistant", content: "", createdAt: Date.now() };
+        session.messages.push(assistantMessage);
+      }
+      delete assistantMessage.streaming;
+      assistantMessage.error = true;
+      if (!assistantMessage.content) assistantMessage.content = String(error).slice(0, 2000);
+      showToast(`本机流式回复中断：${String(error).slice(0, 300)}`, "error");
       session.updatedAt = Date.now(); saveSessions();
     } finally {
+      state.chatStream = null;
       state.busyChat = false; state.busySessionId = null; renderChat(); await refreshRuntime();
     }
   }
@@ -1788,9 +2037,11 @@
       state.settings = await invoke("app_settings");
       $("#settings-model-dir").value = state.settings.modelDirectory;
       $("#settings-creations-dir").value = state.settings.creationsDirectory || "";
+      $("#settings-language").value = state.settings.language || "zh-CN";
       $("#settings-appearance").value = state.settings.appearance || "system";
-      $("#settings-port").value = state.settings.apiPort || 8686;
+      $("#settings-port").value = state.settings.apiPort || 8666;
       applyAppearance(state.settings.appearance);
+      applyLanguage(state.settings.language);
       renderModelStorage();
       renderComfyUiDirectoryState();
     } catch (error) { $("#settings-status").textContent = `无法读取设置：${error}`; }
@@ -1798,19 +2049,110 @@
   function applyAppearance(value) {
     document.documentElement.dataset.theme = value === "dark" ? "dark" : (value === "light" ? "light" : "system");
   }
+  function applyLanguage(value) {
+    const english = value === "en-US";
+    const text = (zh, en) => english ? en : zh;
+    document.documentElement.lang = english ? "en-US" : "zh-CN";
+    const navLabels = english
+      ? { overview: "Overview", models: "Models", run: "Runtime", chat: "Chat", agent: "Agent", schedule: "Schedule", image: "Images", video: "Video", monitor: "Monitor", settings: "Settings" }
+      : { overview: "概览", models: "模型", run: "运行", chat: "对话", agent: "Agent", schedule: "定时", image: "画图", video: "视频", monitor: "监测", settings: "设置" };
+    $(".nav-caption").textContent = text("工作区", "WORKSPACE");
+    $$(".nav-item").forEach((item) => {
+      const node = item.lastChild;
+      if (node?.nodeType === Node.TEXT_NODE) node.textContent = navLabels[item.dataset.page] || node.textContent;
+    });
+    $(".local-note strong").textContent = text("本地优先", "LOCAL FIRST");
+    $(".local-note small").textContent = text("聊天内容留在此设备", "Chats stay on this device");
+    const pageTitles = english
+      ? { overview: "Overview", models: "Models", run: "Runtime", chat: "Chat", agent: "Agent", schedule: "Schedule", image: "Images", video: "Video", monitor: "Monitor", settings: "Settings" }
+      : { overview: "概览", models: "模型", run: "运行", chat: "对话", agent: "Agent", schedule: "定时", image: "画图", video: "视频", monitor: "监测", settings: "设置" };
+    $$(".page").forEach((page) => { if (pageTitles[page.id.replace("page-", "")]) page.dataset.title = pageTitles[page.id.replace("page-", "")]; });
+    $("#page-title").textContent = pageTitles[document.body.dataset.page] || "";
+    const privacy = $(".privacy-chip");
+    if (privacy?.lastChild?.nodeType === Node.TEXT_NODE) privacy.lastChild.textContent = text("本地管理", "Local");
+    const settingText = [
+      ["#page-settings .page-intro h1", "设置", "Settings"],
+      ["#page-settings .page-intro .intro-copy", "配置模型和作品目录、界面外观与本地 API 端口。", "Configure model and output folders, appearance, and the local API port."],
+      ["#page-settings .settings-stack article:nth-of-type(1) h2", "模型存放", "Model storage"],
+      ["label[for='settings-model-dir']", "模型目录", "Model folder"],
+      ["#choose-model-dir", "选择目录", "Choose folder"],
+      ["#page-settings .settings-stack article:nth-of-type(1) p", "新导入或下载的 GGUF 文件存放在这里；更改目录不会搬移已有模型。", "Newly imported or downloaded GGUF files go here. Changing this folder does not move existing models."],
+      ["#page-settings .settings-stack article:nth-of-type(2) h2", "作品保存位置", "Output location"],
+      ["label[for='settings-creations-dir']", "图片 / 视频作品目录", "Image / video output folder"],
+      ["#choose-creations-dir", "选择目录", "Choose folder"],
+      ["#settings-creations-dir", "留空使用应用默认目录", "Leave blank to use the app's default folder"],
+      ["#page-settings .settings-stack article:nth-of-type(2) p", "留空时使用应用默认作品目录；选择位置后，图片与视频分别保存在 images 和 videos 子目录。更改位置不会移动已有作品。", "Leave blank to use the default output folder. Images and videos are saved in separate subfolders; changing this location does not move existing files."],
+      ["#page-settings .settings-stack article:nth-of-type(3) h2", "界面与服务", "Interface and service"],
+      ["label[for='settings-language']", "界面语言", "Language"],
+      ["#settings-language-note", "英语目前覆盖导航、设置页和版本检查区；其他功能页可能仍显示中文。", "English currently covers navigation, Settings, and update checks; other feature panels may still appear in Chinese."],
+      ["label[for='settings-appearance']", "外观", "Appearance"],
+      ["label[for='settings-port']", "本地 API 端口", "Local API port"],
+      ["#page-settings .settings-stack article:nth-of-type(3) p", "新配置默认 8666；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。", "New configurations default to 8666; the runtime binds to 127.0.0.1 by default. Stop the model before changing the port, then restart for it to take effect."],
+      ["#page-settings .settings-stack article:nth-of-type(4) h2", "应用更新", "App updates"],
+      ["#page-settings .app-update-card > p", "只查询本项目公开 GitHub Release 的版本与发行说明；不会自动下载或安装。", "Checks this project's public GitHub Releases for version and notes only; nothing is downloaded or installed."],
+      ["#check-app-update", "检查应用更新", "Check for app updates"],
+      ["#page-settings .settings-actions button[type='submit']", "保存设置", "Save settings"],
+      ["#page-settings .notice strong", "本地数据", "Local data"],
+      ["#page-settings .notice span", "对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。", "Chats and models stay on this device. Hugging Face search/download connects to its website; chat content is not uploaded there."]
+    ];
+    settingText.forEach(([selector, zh, en]) => { const element = $(selector); if (element) element.textContent = text(zh, en); });
+    $("#settings-creations-dir").placeholder = text("留空使用应用默认目录", "Leave blank to use the app's default folder");
+    const appearanceOptions = $("#settings-appearance").options;
+    if (appearanceOptions.length === 3) {
+      ["跟随系统", "浅色", "深色"].forEach((zh, index) => { appearanceOptions[index].textContent = text(zh, ["System", "Light", "Dark"][index]); });
+    }
+    const updateStatus = $("#app-update-status");
+    if (["尚未检查", "Not checked yet"].includes(updateStatus.textContent)) updateStatus.textContent = text("尚未检查", "Not checked yet");
+  }
+  async function checkAppUpdate() {
+    const button = $("#check-app-update");
+    const status = $("#app-update-status");
+    const details = $("#app-update-details");
+    const english = $("#settings-language").value === "en-US";
+    button.disabled = true;
+    status.textContent = english ? "Checking…" : "正在查询…";
+    details.hidden = true;
+    details.replaceChildren();
+    try {
+      const result = await invoke("check_app_update");
+      status.textContent = result.updateAvailable
+        ? (english ? `Update available: ${result.latestVersion}` : `发现新版本：${result.latestVersion}`)
+        : (english ? `Up to date · ${result.currentVersion}` : `已是最新 · ${result.currentVersion}`);
+      const version = document.createElement("strong");
+      version.textContent = english
+        ? `Installed ${result.currentVersion} · Latest ${result.latestVersion}`
+        : `当前 ${result.currentVersion} · 最新 ${result.latestVersion}`;
+      const notes = document.createElement("p");
+      notes.textContent = result.releaseNotes || (english ? "No release notes provided." : "该 Release 未提供发行说明。");
+      const link = document.createElement("a");
+      link.href = result.releaseUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = english ? "Open GitHub Release" : "打开 GitHub Release";
+      details.append(version, notes, link);
+      details.hidden = false;
+    } catch (error) {
+      status.textContent = english ? "Check failed; see the message below." : "查询失败，详情见下方。";
+      const message = document.createElement("p");
+      message.textContent = String(error);
+      details.append(message);
+      details.hidden = false;
+    } finally { button.disabled = false; }
+  }
   async function saveSettings(event) {
     event.preventDefault();
     const settings = {
       ...(state.settings || {}),
       modelDirectory: $("#settings-model-dir").value.trim(),
       creationsDirectory: $("#settings-creations-dir").value.trim() || null,
+      language: $("#settings-language").value,
       appearance: $("#settings-appearance").value,
       apiPort: Number($("#settings-port").value),
     };
     const status = $("#settings-status"); status.textContent = "正在保存…";
     try {
       state.settings = await invoke("save_app_settings", { settings });
-      status.textContent = "已保存"; applyAppearance(settings.appearance);
+      status.textContent = "已保存"; applyAppearance(settings.appearance); applyLanguage(settings.language);
       renderComfyUiDirectoryState();
       await Promise.all([refreshRuntime(), loadModels(), refreshModelStorage()]);
       showToast("设置已保存");
@@ -1935,6 +2277,142 @@
     $("#image-canvas-view").hidden = !canvas;
   }
 
+  function formatImageDate(timestamp) {
+    const value = Number(timestamp);
+    if (!Number.isFinite(value) || value <= 0) return "时间未知";
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  }
+
+  function clearGeneratedImagePreview(title, detail) {
+    state.imagePreviewSequence += 1;
+    state.selectedImagePath = null;
+    ["#image-preview-image", "#image-canvas-image"].forEach((selector) => {
+      const image = $(selector);
+      image.removeAttribute("src");
+      image.hidden = true;
+    });
+    const formPlaceholder = $("#image-preview-placeholder");
+    formPlaceholder.hidden = false;
+    $("strong", formPlaceholder).textContent = title;
+    $("small", formPlaceholder).textContent = detail;
+    const canvasPlaceholder = $("#image-canvas-placeholder");
+    canvasPlaceholder.hidden = false;
+    $("h2", canvasPlaceholder).textContent = title;
+    $("p", canvasPlaceholder).textContent = detail;
+    $("#image-preview-meta").textContent = "生成后会显示在这里";
+    $("#image-result-path").textContent = "";
+    $("#image-open-result").disabled = true;
+    $("#image-canvas-name").textContent = "未选择作品";
+    $("#image-canvas-meta").textContent = "PNG 预览 · 本机文件";
+  }
+
+  function renderGeneratedImageList() {
+    const list = $("#image-gallery-list");
+    const summary = $("#image-gallery-summary");
+    if (!list || !summary) return;
+    list.replaceChildren();
+    summary.textContent = state.generatedImages.length
+      ? `显示最近 ${state.generatedImages.length} 张 PNG · 最多 100 张`
+      : "作品会保存在本机，不会自动上传。";
+    if (!state.generatedImages.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = "还没有图片作品。先生成一张图片，或检查本机作品文件夹。";
+      list.append(empty);
+      return;
+    }
+    state.generatedImages.forEach((image) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `image-gallery-item${image.path === state.selectedImagePath ? " active" : ""}`;
+      button.setAttribute("aria-pressed", String(image.path === state.selectedImagePath));
+      const mark = document.createElement("span");
+      mark.className = "image-gallery-item-mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = "▧";
+      const details = document.createElement("span");
+      details.className = "image-gallery-item-details";
+      const name = document.createElement("strong");
+      name.textContent = image.name;
+      name.title = image.name;
+      const metadata = document.createElement("small");
+      metadata.textContent = `${formatImageDate(image.modifiedAtMs)} · ${fmtBytes(Number(image.sizeBytes))}`;
+      details.append(name, metadata);
+      button.append(mark, details);
+      button.addEventListener("click", () => { void selectGeneratedImage(image.path); });
+      list.append(button);
+    });
+  }
+
+  async function selectGeneratedImage(imagePath) {
+    const image = state.generatedImages.find((item) => item.path === imagePath);
+    if (!image) return;
+    state.selectedImagePath = image.path;
+    const sequence = ++state.imagePreviewSequence;
+    renderGeneratedImageList();
+    $("#image-gallery-status").textContent = `正在安全读取 ${image.name} 的 PNG 预览…`;
+    $("#image-preview-meta").textContent = "正在读取本机 PNG…";
+    try {
+      const dataUrl = await invoke("preview_generated_image", { imagePath: image.path });
+      if (sequence !== state.imagePreviewSequence) return;
+      ["#image-preview-image", "#image-canvas-image"].forEach((selector) => {
+        const element = $(selector);
+        element.src = dataUrl;
+        element.alt = image.name;
+        element.hidden = false;
+      });
+      $("#image-preview-placeholder").hidden = true;
+      $("#image-canvas-placeholder").hidden = true;
+      const imageMeta = `${fmtBytes(Number(image.sizeBytes))} · ${formatImageDate(image.modifiedAtMs)}`;
+      $("#image-preview-meta").textContent = imageMeta;
+      $("#image-result-path").textContent = image.path;
+      $("#image-open-result").disabled = false;
+      $("#image-canvas-name").textContent = image.name;
+      $("#image-canvas-meta").textContent = `${imageMeta} · PNG · 本机文件`;
+      $("#image-gallery-status").textContent = "预览通过本地应用读取；作品文件未上传，也未被修改。";
+    } catch (error) {
+      if (sequence !== state.imagePreviewSequence) return;
+      $("#image-preview-image").hidden = true;
+      $("#image-canvas-image").hidden = true;
+      $("#image-preview-placeholder").hidden = false;
+      $("#image-canvas-placeholder").hidden = false;
+      $("strong", $("#image-preview-placeholder")).textContent = "无法显示这张图片";
+      $("small", $("#image-preview-placeholder")).textContent = String(error);
+      $("h2", $("#image-canvas-placeholder")).textContent = "无法显示这张图片";
+      $("p", $("#image-canvas-placeholder")).textContent = String(error);
+      $("#image-preview-meta").textContent = "预览不可用";
+      $("#image-result-path").textContent = image.path;
+      $("#image-open-result").disabled = false;
+      $("#image-canvas-name").textContent = image.name;
+      $("#image-canvas-meta").textContent = "可在本机作品文件夹中打开";
+      $("#image-gallery-status").textContent = `预览失败：${error}`;
+    }
+  }
+
+  async function loadGeneratedImages(preferredPath = null) {
+    const summary = $("#image-gallery-summary");
+    if (!summary) return;
+    summary.textContent = "正在读取作品清单…";
+    try {
+      state.generatedImages = await invoke("list_generated_images");
+      renderGeneratedImageList();
+      const nextPath = preferredPath
+        || (state.generatedImages.some((image) => image.path === state.selectedImagePath) ? state.selectedImagePath : null)
+        || state.generatedImages[0]?.path;
+      if (nextPath) await selectGeneratedImage(nextPath);
+      else {
+        clearGeneratedImagePreview("还没有图片作品", "生成完成的 PNG 会出现在这里；也可以从作品列表中选择查看。");
+        $("#image-gallery-status").textContent = "还没有 PNG 作品；目录索引不会修改或删除文件。";
+      }
+    } catch (error) {
+      state.generatedImages = [];
+      renderGeneratedImageList();
+      $("#image-gallery-summary").textContent = "无法读取本机作品清单。";
+      $("#image-gallery-status").textContent = `读取失败：${error}`;
+      clearGeneratedImagePreview("作品清单暂不可用", "可以刷新，或在设置中检查作品目录。 ");
+    }
+  }
+
   async function openCreationsDirectory(kind, button) {
     button.disabled = true;
     try {
@@ -1989,8 +2467,9 @@
     };
     try {
       const generated = await invoke("generate_media", { jobId, request });
-      result.textContent = `已生成并保存：${generated.outputPath}`;
       status.textContent = "引擎已返回成功状态，且已确认非空作品文件存在。";
+      if (kind === "image") await loadGeneratedImages(generated.outputPath);
+      result.textContent = `已生成并保存：${generated.outputPath}`;
       showToast(video ? "视频生成完成" : "图片生成完成");
     } catch (error) {
       status.textContent = `生成失败或已取消：${error}`;
@@ -2022,10 +2501,15 @@
       renderRecommendedModels();
       await listen("engine-progress", (event) => {
         const progress = event.payload;
+        const engineKey = progress.engine === "llama.cpp" ? "chat" : "media";
+        const message = progress.phase === "download" ? `下载中 ${progress.total ? Math.round(progress.completed / progress.total * 100) : 0}% · ${fmtBytes(progress.completed)} / ${fmtBytes(progress.total)}` : progress.phase === "verify" ? "正在校验 SHA-256…" : progress.phase === "extract" ? `安全解压 ${progress.completed} / ${progress.total}` : "安装完成";
+        if (state.engineInstallBusy.has(engineKey)) {
+          state.engineInstallMessages.set(engineKey, message);
+          if (engineKey === "chat") updateQuickstart();
+        }
         $$(".engine-card").filter((card) => (card.dataset.engine === "llama.cpp" ? "llama.cpp" : "stable-diffusion.cpp") === progress.engine)
-          .forEach((card) => { const box = $("[data-progress]", card); box.hidden = false; box.textContent = progress.phase === "download" ? `下载中 ${progress.total ? Math.round(progress.completed / progress.total * 100) : 0}% · ${fmtBytes(progress.completed)} / ${fmtBytes(progress.total)}` : progress.phase === "verify" ? "正在校验 SHA-256…" : progress.phase === "extract" ? `安全解压 ${progress.completed} / ${progress.total}` : "安装完成"; });
+          .forEach((card) => { const box = $("[data-progress]", card); box.hidden = false; box.textContent = message; });
         if (progress.engine === "stable-diffusion.cpp") {
-          const message = progress.phase === "download" ? `下载中 ${progress.total ? Math.round(progress.completed / progress.total * 100) : 0}% · ${fmtBytes(progress.completed)} / ${fmtBytes(progress.total)}` : progress.phase === "verify" ? "正在校验 SHA-256…" : progress.phase === "extract" ? `安全解压 ${progress.completed} / ${progress.total}` : "安装完成";
           ["image", "video"].forEach((page) => { const box = $(`#${page}-engine-progress`); if (box) { box.hidden = false; box.textContent = message; } });
         }
       });
@@ -2042,8 +2526,10 @@
           progress.textContent = `组件 ${payload.fileName} · 当前 ${payload.total ? Math.floor(payload.completed / payload.total * 100) : 0}% · 总进度 ${overall}% · ${fmtBytes(payload.overallCompleted)} / ${fmtBytes(payload.overallTotal)}`;
         }
       });
+      await listen("chat-stream", handleChatStream);
       renderRunPreferences();
       $("#schedule-at").value = defaultScheduleInputTime();
+      renderPushChannelFields();
       $("#chat-temperature").value = String(state.chatPreferences.temperature);
       $("#chat-temperature-value").textContent = state.chatPreferences.temperature.toFixed(1);
       $("#chat-include-history").checked = state.chatPreferences.includeHistory;
@@ -2059,6 +2545,10 @@
   window.addEventListener("resize", () => { if ($("#page-monitor").classList.contains("active")) drawChart(); });
   $("#refresh-hardware").addEventListener("click", loadHardware);
   $("#quickstep-refresh-hardware").addEventListener("click", loadHardware);
+  $("#quickstep-engine-action").addEventListener("click", () => {
+    if (state.engines.get("llama.cpp")?.installedVersions?.length) { location.hash = "#run"; return; }
+    void installEngineFromLatest("chat");
+  });
   $("#refresh-model-storage").addEventListener("click", refreshModelStorage);
   $("#overview-choose-model-dir").addEventListener("click", chooseOverviewModelDirectory);
   $("#overview-recommended-models").addEventListener("click", () => switchModelTab("recommended"));
@@ -2088,6 +2578,8 @@
   });
   $$("[data-image-view]").forEach((button) => button.addEventListener("click", () => switchImageView(button.dataset.imageView)));
   $("#open-creations-directory").addEventListener("click", (event) => openCreationsDirectory("image", event.currentTarget));
+  $("#refresh-image-gallery").addEventListener("click", () => loadGeneratedImages());
+  $("#image-open-result").addEventListener("click", () => switchImageView("canvas"));
   $("#open-video-directory").addEventListener("click", (event) => openCreationsDirectory("video", event.currentTarget));
   $("#open-image-model-library").addEventListener("click", () => openHuggingFaceLibrary("image", "diffusion"));
   $("#open-video-model-library").addEventListener("click", () => openHuggingFaceLibrary("video", "Wan"));
@@ -2165,10 +2657,17 @@
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#choose-model-dir").addEventListener("click", chooseModelDirectory);
   $("#choose-creations-dir").addEventListener("click", chooseCreationsDirectory);
+  $("#settings-language").addEventListener("change", (event) => applyLanguage(event.target.value));
   $("#settings-appearance").addEventListener("change", (event) => applyAppearance(event.target.value));
+  $("#check-app-update").addEventListener("click", checkAppUpdate);
   $("#monitor-refresh").addEventListener("click", refreshSystem);
   $("#schedule-refresh").addEventListener("click", loadScheduledTasks);
   $("#schedule-form").addEventListener("submit", createScheduledTask);
+  $("#schedule-recurrence").addEventListener("change", (event) => {
+    $("#schedule-interval-wrap").hidden = event.target.value !== "interval";
+  });
+  $("#push-channel-kind").addEventListener("change", renderPushChannelFields);
+  $("#push-channel-form").addEventListener("submit", savePushChannel);
   $$("[data-jump]").forEach((button) => button.addEventListener("click", () => { location.hash = `#${button.dataset.jump}`; }));
   start();
 })();

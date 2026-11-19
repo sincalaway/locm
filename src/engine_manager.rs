@@ -415,6 +415,7 @@ pub fn desktop_latest(engine: &str) -> AppResult<ReleaseInfo> {
 pub fn desktop_install<F>(
     engine: &str,
     permit_prerelease: bool,
+    expected_tag: &str,
     progress: F,
 ) -> AppResult<EngineStatus>
 where
@@ -422,8 +423,10 @@ where
 {
     ensure_supported_install_platform()?;
     let kind = EngineKind::parse(engine)?;
+    validate_expected_release_tag(expected_tag, expected_tag)?;
     let root = default_engines_root()?;
     let release = latest_release(kind, permit_prerelease)?;
+    validate_expected_release_tag(expected_tag, &release.tag)?;
     install_release(&release, &root, progress)?;
     engine_status(kind, &root)
 }
@@ -1119,6 +1122,18 @@ fn safe_component(value: &str) -> bool {
         && safe_windows_segment(value)
 }
 
+fn validate_expected_release_tag(expected_tag: &str, actual_tag: &str) -> AppResult<()> {
+    if !safe_component(expected_tag) {
+        return Err(invalid("确认的版本标签无效或为空；请重新检查最新版本"));
+    }
+    if expected_tag != actual_tag {
+        return Err(invalid(format!(
+            "确认的版本已变更，请重新检查后再安装；确认 {expected_tag}，当前 {actual_tag}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(any(not(feature = "desktop"), test))]
 fn print_status(kind: EngineKind, engines_root: &Path) -> AppResult<()> {
     let engine_root = engines_root.join(kind.id());
@@ -1449,5 +1464,23 @@ mod tests {
         fs::create_dir_all(&chat).unwrap();
         fs::create_dir_all(&media).unwrap();
         assert_ne!(chat, media);
+    }
+
+    #[test]
+    fn expected_release_tag_matching_is_allowed() {
+        assert!(validate_expected_release_tag("v1.2.3", "v1.2.3").is_ok());
+    }
+
+    #[test]
+    fn expected_release_tag_mismatch_is_rejected() {
+        let error = validate_expected_release_tag("v1.2.3", "v1.2.4").unwrap_err();
+        assert!(error.to_string().contains("确认的版本已变更"));
+        assert!(error.to_string().contains("确认 v1.2.3，当前 v1.2.4"));
+    }
+
+    #[test]
+    fn empty_or_invalid_expected_release_tag_is_rejected() {
+        assert!(validate_expected_release_tag("", "v1.2.3").is_err());
+        assert!(validate_expected_release_tag("../v1.2.3", "../v1.2.3").is_err());
     }
 }

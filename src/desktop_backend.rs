@@ -28,11 +28,13 @@ pub struct HardwareSnapshot {
     pub os: String,
     pub architecture: String,
     pub cpu_name: String,
+    pub physical_cores: Option<usize>,
     pub logical_cores: usize,
     pub total_memory_bytes: u64,
     pub available_memory_bytes: u64,
     pub gpu_name: Option<String>,
     pub gpu_memory_bytes: Option<u64>,
+    pub gpu_memory_used_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -94,19 +96,24 @@ pub struct HuggingFaceFile {
 pub struct AppSettings {
     pub model_directory: String,
     pub appearance: String,
+    #[serde(default = "default_language")]
+    pub language: String,
     pub api_port: u16,
     #[serde(default)]
     pub comfyui_directory: Option<String>,
     #[serde(default)]
     pub creations_directory: Option<String>,
 }
-
+fn default_language() -> String {
+    "zh-CN".to_string()
+}
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             model_directory: String::new(),
             appearance: "system".to_string(),
-            api_port: 8686,
+            language: default_language(),
+            api_port: 8666,
             comfyui_directory: None,
             creations_directory: None,
         }
@@ -295,6 +302,12 @@ pub fn save_settings(app: &AppHandle, settings: AppSettings) -> Result<AppSettin
     if !(1024..=65535).contains(&settings.api_port) {
         return Err("本地 API 端口必须在 1024 到 65535 之间".to_string());
     }
+    if !matches!(settings.appearance.as_str(), "system" | "light" | "dark") {
+        return Err("界面外观选项无效".to_string());
+    }
+    if !matches!(settings.language.as_str(), "zh-CN" | "en-US") {
+        return Err("界面语言选项无效".to_string());
+    }
     let model_dir = PathBuf::from(&settings.model_directory);
     if model_dir.as_os_str().is_empty() {
         return Err("模型目录不能为空".to_string());
@@ -342,16 +355,18 @@ pub fn hardware_snapshot() -> HardwareSnapshot {
         .map(|cpu| cpu.brand().trim().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "未识别处理器".to_string());
-    let (gpu_name, gpu_memory_bytes) = detect_gpu();
+    let (gpu_name, gpu_memory_bytes, gpu_memory_used_bytes) = detect_gpu();
     HardwareSnapshot {
         os: System::long_os_version().unwrap_or_else(|| env::consts::OS.to_string()),
         architecture: env::consts::ARCH.to_string(),
         cpu_name,
+        physical_cores: System::physical_core_count(),
         logical_cores: system.cpus().len(),
         total_memory_bytes: system.total_memory(),
         available_memory_bytes: system.available_memory(),
         gpu_name,
         gpu_memory_bytes,
+        gpu_memory_used_bytes,
     }
 }
 
@@ -447,30 +462,24 @@ pub fn system_snapshot() -> SystemSnapshot {
     }
 }
 
-fn detect_gpu() -> (Option<String>, Option<u64>) {
+fn detect_gpu() -> (Option<String>, Option<u64>, Option<u64>) {
     if let Ok(output) = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=name,memory.total",
+            "--query-gpu=name,memory.total,memory.used",
             "--format=csv,noheader,nounits",
         ])
         .output()
     {
         if output.status.success() {
-            if let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() {
-                let mut parts = line.splitn(2, ',').map(str::trim);
-                let name = parts
-                    .next()
-                    .filter(|name| !name.is_empty())
-                    .map(str::to_string);
-                let memory = parts
-                    .next()
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .map(|mib| mib.saturating_mul(1024 * 1024));
-                if name.is_some() {
-                    return (name, memory);
-                }
+            let snapshot = parse_nvidia_smi_gpus(&String::from_utf8_lossy(&output.stdout));
+            if snapshot.0.is_some() {
+                return snapshot;
             }
         }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(snapshot) = detect_linux_drm_gpu() {
+        return snapshot;
     }
     #[cfg(target_os = "windows")]
     {
@@ -484,16 +493,111 @@ fn detect_gpu() -> (Option<String>, Option<u64>) {
             .output()
         {
             if output.status.success() {
-                let name = String::from_utf8_lossy(&output.stdout)
+                let output_text = String::from_utf8_lossy(&output.stdout);
+                let names = output_text
                     .lines()
                     .map(str::trim)
-                    .find(|line| !line.is_empty())
-                    .map(str::to_string);
-                return (name, None);
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                if !names.is_empty() {
+                    return (Some(names.join(", ")), None, None);
+                }
             }
         }
     }
-    (None, None)
+    (None, None, None)
+}
+
+fn parse_nvidia_smi_gpus(output: &str) -> (Option<String>, Option<u64>, Option<u64>) {
+    let mut names = Vec::new();
+    let mut total_bytes = 0u64;
+    let mut used_bytes = 0u64;
+    let mut total_known = true;
+    let mut used_known = true;
+    for line in output.lines() {
+        let mut parts = line.splitn(3, ',').map(str::trim);
+        let Some(name) = parts.next().filter(|name| !name.is_empty()) else {
+            continue;
+        };
+        names.push(name);
+        match parts.next().and_then(parse_gpu_memory_mib) {
+            Some(value) => total_bytes = total_bytes.saturating_add(value),
+            None => total_known = false,
+        }
+        match parts.next().and_then(parse_gpu_memory_mib) {
+            Some(value) => used_bytes = used_bytes.saturating_add(value),
+            None => used_known = false,
+        }
+    }
+    if names.is_empty() {
+        return (None, None, None);
+    }
+    (
+        Some(names.join(", ")),
+        total_known.then_some(total_bytes),
+        used_known.then_some(used_bytes),
+    )
+}
+
+fn parse_gpu_memory_mib(value: &str) -> Option<u64> {
+    value
+        .parse::<u64>()
+        .ok()
+        .map(|mib| mib.saturating_mul(1024 * 1024))
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_drm_gpu() -> Option<(Option<String>, Option<u64>, Option<u64>)> {
+    let devices = fs::read_dir("/sys/class/drm").ok()?;
+    let mut names = Vec::new();
+    let mut total_bytes = 0u64;
+    let mut used_bytes = 0u64;
+    let mut used_known = true;
+    for entry in devices.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(index) = name.strip_prefix("card") else {
+            continue;
+        };
+        if index.is_empty() || !index.chars().all(|character| character.is_ascii_digit()) {
+            continue;
+        }
+        let device = entry.path().join("device");
+        let Ok(total) = fs::read_to_string(device.join("mem_info_vram_total")) else {
+            continue;
+        };
+        let Ok(total) = total.trim().parse::<u64>() else {
+            continue;
+        };
+        let product_name = fs::read_to_string(device.join("product_name"))
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let display_name = product_name.or_else(|| {
+            fs::read_to_string(device.join("device"))
+                .ok()
+                .map(|value| format!("GPU · PCI ID {}", value.trim()))
+        });
+        if let Some(display_name) = display_name {
+            names.push(display_name);
+            total_bytes = total_bytes.saturating_add(total);
+            match fs::read_to_string(device.join("mem_info_vram_used"))
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+            {
+                Some(value) => used_bytes = used_bytes.saturating_add(value),
+                None => used_known = false,
+            }
+        }
+    }
+    (!names.is_empty()).then(|| {
+        (
+            Some(names.join(", ")),
+            Some(total_bytes),
+            used_known.then_some(used_bytes),
+        )
+    })
 }
 
 pub fn list_models(app: &AppHandle) -> Result<Vec<ModelInfo>, String> {
@@ -1386,12 +1490,32 @@ fn percent_encode_path(value: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn new_settings_default_to_local_api_port_8666() {
+        assert_eq!(AppSettings::default().api_port, 8666);
+        assert_eq!(AppSettings::default().language, "zh-CN");
+    }
+
+    #[test]
+    fn nvidia_smi_gpu_memory_is_summed_without_guessing_missing_values() {
+        let (name, total, used) =
+            parse_nvidia_smi_gpus("NVIDIA RTX A, 8192, 1024\nNVIDIA RTX B, 4096, 512\n");
+        assert_eq!(name.as_deref(), Some("NVIDIA RTX A, NVIDIA RTX B"));
+        assert_eq!(total, Some(12 * 1024 * 1024 * 1024));
+        assert_eq!(used, Some(1536 * 1024 * 1024));
+
+        let (_, total, used) = parse_nvidia_smi_gpus("NVIDIA RTX, N/A, N/A\n");
+        assert_eq!(total, None);
+        assert_eq!(used, None);
+    }
+
+    #[test]
     fn settings_without_creations_directory_remain_compatible() {
         let settings: AppSettings = serde_json::from_str(
             r#"{"modelDirectory":"/tmp/models","appearance":"system","apiPort":8686}"#,
         )
         .unwrap();
         assert_eq!(settings.creations_directory, None);
+        assert_eq!(settings.language, "zh-CN");
     }
     #[test]
     fn repository_and_file_validation_blocks_path_traversal() {

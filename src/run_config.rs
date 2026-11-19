@@ -227,7 +227,7 @@ mod tests {
         let args = build_server_args(
             Path::new("/models/model with spaces.gguf"),
             "192.168.1.17",
-            8686,
+            8666,
             &preferences,
             &capabilities,
         )
@@ -240,7 +240,7 @@ mod tests {
                 "--host",
                 "192.168.1.17",
                 "--port",
-                "8686",
+                "8666",
                 "--n-gpu-layers",
                 "0",
                 "--ctx-size",
@@ -265,7 +265,7 @@ mod tests {
         let args = build_server_args(
             Path::new("/models/default.gguf"),
             "127.0.0.1",
-            8686,
+            8666,
             &preferences,
             &capabilities,
         )
@@ -286,7 +286,7 @@ mod tests {
         assert!(build_server_args(
             Path::new("m.gguf"),
             "127.0.0.1",
-            8686,
+            8666,
             &preferences,
             &capabilities
         )
@@ -297,7 +297,7 @@ mod tests {
         assert!(build_server_args(
             Path::new("m.gguf"),
             "127.0.0.1",
-            8686,
+            8666,
             &preferences,
             &capabilities
         )
@@ -308,7 +308,7 @@ mod tests {
         assert!(build_server_args(
             Path::new("m.gguf"),
             "127.0.0.1",
-            8686,
+            8666,
             &preferences,
             &capabilities
         )
@@ -344,7 +344,7 @@ mod tests {
         let args = build_server_args(
             Path::new("/tmp/fake model.gguf"),
             "127.0.0.1",
-            8686,
+            8666,
             &preferences,
             &capabilities,
         )

@@ -239,17 +239,17 @@
     details.className = "agent-approval-details";
     if (action.kind === "command") {
       heading.textContent = "Agent 请求运行一条命令";
-      explanation.textContent = `将以当前用户权限直接启动此程序并继承当前环境变量，工作目录为：${task.workspace}。程序可能访问工作区外文件或网络；直接进程最多运行 120 秒，每条输出流最多保留 32 KiB，超时不保证终止其启动的子进程。请先检查具体程序和参数。`;
+      explanation.textContent = `点击后还会弹出系统原生确认框，显示精确程序和参数。命令仍以当前用户权限运行并继承环境变量，工作目录为：${task.workspace}；程序可能访问工作区外文件或网络。直接进程最多运行 120 秒，每条输出流最多保留 32 KiB，超时不保证终止其启动的子进程。`;
       preview.textContent = JSON.stringify([action.program, ...(action.args || [])], null, 2);
       summary.textContent = "查看精确程序和参数";
     } else if (action.kind === "delete") {
       heading.textContent = "Agent 请求删除一个文件";
-      explanation.textContent = `只会删除下列工作区内的普通文件，不会删除目录或符号链接：${task.workspace}`;
+      explanation.textContent = `点击后还会弹出系统原生确认框；仅删除工作区内的普通文件，不会删除目录或符号链接：${task.workspace}`;
       preview.textContent = action.path;
       summary.textContent = "查看要删除的文件";
     } else {
       heading.textContent = "目标文件已存在，需要确认覆盖";
-      explanation.textContent = `覆盖会替换该文件的现有内容；修改仅发生在当前工作区：${task.workspace}`;
+      explanation.textContent = `点击后还会弹出系统原生确认框，并显示新内容预览及 SHA-256；覆盖仅发生在当前工作区：${task.workspace}`;
       preview.textContent = action.content || "（空文件）";
       summary.textContent = `查看将写入 ${action.path} 的新内容`;
     }
@@ -264,7 +264,7 @@
     const approve = document.createElement("button");
     approve.type = "button";
     approve.className = "button primary";
-    approve.textContent = action.kind === "command" ? "批准并运行一次" : action.kind === "delete" ? "批准删除" : "批准覆盖";
+    approve.textContent = action.kind === "command" ? "打开系统确认并运行" : action.kind === "delete" ? "打开系统确认并删除" : "打开系统确认并覆盖";
     deny.disabled = state.busy;
     approve.disabled = state.busy;
     approve.addEventListener("click", () => approvePending(task));
@@ -550,9 +550,21 @@
           content: action.content,
           allowOverwrite: true,
         });
+        if (result.cancelled) {
+          task.status = "paused";
+          addToolResult(task, `你取消了系统确认；文件未写入：${action.path}。不要重试，除非用户之后再次明确要求。`);
+          addEntry(task, "status", "系统确认已取消，文件没有被覆盖；任务已暂停。你可以继续发送指示。");
+          return;
+        }
         resultText = result.written ? `用户已批准覆盖，文件已写入：${action.path}` : `文件未写入：${action.path}`;
       } else if (action.kind === "delete") {
-        await invoke("agent_delete_file", { workspace: task.workspace, relativePath: action.path });
+        const deleted = await invoke("agent_delete_file", { workspace: task.workspace, relativePath: action.path });
+        if (!deleted) {
+          task.status = "paused";
+          addToolResult(task, `你取消了系统确认；文件未删除：${action.path}。不要重试，除非用户之后再次明确要求。`);
+          addEntry(task, "status", "系统确认已取消，文件没有被删除；任务已暂停。你可以继续发送指示。");
+          return;
+        }
         resultText = `用户已批准删除，文件已删除：${action.path}`;
       } else {
         const result = await invoke("agent_run_command", {
@@ -560,6 +572,12 @@
           program: action.program,
           args: action.args,
         });
+        if (result.cancelled) {
+          task.status = "paused";
+          addToolResult(task, `你取消了系统确认；命令没有运行：${JSON.stringify([action.program, ...action.args])}。不要重试，除非用户之后再次明确要求。`);
+          addEntry(task, "status", "系统确认已取消，命令没有启动；任务已暂停。你可以继续发送指示。");
+          return;
+        }
         resultText = `用户已批准运行命令 ${JSON.stringify([action.program, ...action.args])}。退出码：${result.exitCode ?? "未知"}；成功：${result.success}；超时：${result.timedOut ? "是" : "否"}\nstdout:\n${result.stdout || "（空）"}\nstderr:\n${result.stderr || "（空）"}`;
       }
       task.status = "running";

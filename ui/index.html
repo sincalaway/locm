@@ -187,7 +187,7 @@
             <button class="button secondary agent-new-task" id="agent-new-task" type="button">＋ 新任务</button>
             <div class="agent-list-heading">任务 <span id="agent-task-count">0</span></div>
             <div id="agent-task-list" class="agent-task-list" role="list"></div>
-            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>文件读写只限所选文件夹。每条命令、覆盖或删除操作都会先询问；命令仍可能影响工作区外内容。</span></div>
+            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>文件读写只限所选文件夹。覆盖、删除和命令会在操作预览后再弹出系统原生确认；命令仍可能影响工作区外内容。</span></div>
           </aside>
           <section class="agent-workbench" aria-label="Agent 工作区">
             <header class="agent-toolbar">
@@ -205,7 +205,7 @@
                   <button type="button" data-agent-suggestion="读一下这个项目，写一份 README.md 说明怎么运行">读一下这个项目，写一份 README.md 说明怎么运行</button>
                   <button type="button" data-agent-suggestion="整理这个文件夹：按文件类型分到不同子文件夹">整理这个文件夹：按文件类型分到不同子文件夹</button>
                 </div>
-                <p class="agent-long-task-note">任务由本机已启动的模型处理。文件工具只访问已选工作区；命令、覆盖与删除会显示具体操作并等待批准。</p>
+                <p class="agent-long-task-note">任务由本机已启动的模型处理。文件工具只访问已选工作区；命令、覆盖与删除会显示操作预览，并在执行前通过系统原生确认。</p>
               </div>
               <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
               <section id="agent-approval" class="agent-approval" aria-live="polite" hidden></section>
@@ -220,7 +220,7 @@
                 <label class="sr-only" for="agent-scope">工作区范围</label>
                 <select id="agent-scope" class="agent-scope" aria-label="工作区范围"><option value="workspace">仅限工作区</option></select>
                 <button class="agent-tool-button agent-media-button" id="agent-media" type="button" title="跳转到画图页面；图像和视频生成功能尚未接入">画图 / 视频</button>
-                <span class="agent-safety-copy">文件工具仅限工作区；命令可能影响外部内容，均先询问</span>
+                <span class="agent-safety-copy">命令、覆盖、删除会再经系统原生确认；命令仍可能影响工作区外内容</span>
                 <button class="button primary agent-send" id="agent-send" type="submit" aria-label="发送任务">↑</button>
               </div>
             </form>

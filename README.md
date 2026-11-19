@@ -28,7 +28,7 @@ CPU x64 是目前唯一自动选择的硬件变体；CUDA、Vulkan、ARM64 和�
 
 仓库现在包含一个独立桌面目标，UI 直接调用同一份 Rust 引擎管理器，不会另写一套下载逻辑。开发环境可用以下命令启动：
 
-现有模块分工、技术选型与数据流见[架构说明](docs/ARCHITECTURE.md)。
+现有模块分工、技术选型与数据流见[架构说明](docs/ARCHITECTURE.md)；LocM 与 LocModel 的 Agent 能力边界见[Agent 对照说明](docs/AGENT-PARITY.md)。
 
 ```sh
 cargo run --features desktop --bin local-engine-manager
@@ -36,7 +36,7 @@ cargo run --features desktop --bin local-engine-manager
 
 桌面页会自动读取处理器、逻辑核心数、内存和 NVIDIA/Windows 显卡信息；概览页按硬件检测、安装推理引擎、准备模型显示三步状态。两套官方引擎分别管理，安装进度覆盖下载、SHA-256 校验和安全解压。Linux x86_64 使用官方 CPU 包；llama.cpp 的 tar.gz 和 stable-diffusion.cpp 的 ZIP 都会经过路径与文件类型检查。llama.cpp 预览版会明确标注。stable-diffusion.cpp 是图像与视频共用的一份 CPU 运行时；媒体页可手动从 Hugging Face 下载权重、只读扫描 ComfyUI 权重并调用官方 CLI 尝试生成图像或 Wan 视频。生成的 PNG 可在应用内预览，并可从只读作品索引中重新打开。设置页可选择作品根目录，生成内容分别保存在 `images` 与 `videos` 子目录；旧配置未设置该项时仍使用默认目录。此 CPU 构建不调用 GPU；模型权重不会自动下载。
 
-目前桌面 UI 还支持：导入本地 GGUF、搜索 Hugging Face GGUF 仓库并下载选定文件；配置模型目录、作品目录、外观、语言和本地 API 端口（新配置默认 `8666`；已有设置保留原值；当前英语覆盖导航、设置页和更新区，其他面板仍可能显示中文）；从设置页只读查询应用 GitHub Release 版本和发行说明，不自动下载或安装；选择已安装模型并启动/停止 `llama-server`；按当前服务器 `--help` 动态启用上下文、Flash Attention 与 Q8 K/V 缓存参数；可选在异常退出后自动重试最多 3 次，采用 1、3、8 秒递增间隔，达到上限后停止。Agent 可用已启动的本地模型处理任务、查看工作区文件、在工作区内新建文件，并把任务记录保存在本机 WebView 存储中。Agent 文件操作限定在工作区并拒绝符号链接和 `.git` 元数据；覆盖、删除和命令执行在 UI 中逐项确认。命令仍以当前用户权限运行并继承环境变量，可能访问工作区以外的文件或网络，工作区不是操作系统沙箱。默认 API 只绑定 `127.0.0.1`；用户开启局域网访问时，仅尝试绑定操作系统选定的私有 IPv4 地址，不绑定所有网卡或公网地址。运行页还展示速度、首次加载和资源占用的粗略估算（不是实测）。Hugging Face 搜索和下载会联网；聊天和 Agent 模型请求只发往本地服务。
+目前桌面 UI 还支持：导入本地 GGUF、搜索 Hugging Face GGUF 仓库并下载选定文件；配置模型目录、作品目录、外观、语言和本地 API 端口（新配置默认 `8666`；已有设置保留原值；当前英语覆盖导航、设置页和更新区，其他面板仍可能显示中文）；从设置页只读查询应用 GitHub Release 版本和发行说明，不自动下载或安装；选择已安装模型并启动/停止 `llama-server`；按当前服务器 `--help` 动态启用上下文、Flash Attention 与 Q8 K/V 缓存参数；可选在异常退出后自动重试最多 3 次，采用 1、3、8 秒递增间隔，达到上限后停止。Agent 可用已启动的本地模型处理任务、查看工作区文件、在工作区内新建文件，并把任务记录保存在本机 WebView 存储中。Agent 文件操作限定在工作区并拒绝符号链接和 `.git` 元数据；覆盖、删除和命令执行先显示 UI 操作预览，再由 Rust 后端弹出系统原生确认。命令仍以当前用户权限运行并继承环境变量，可能访问工作区以外的文件或网络，工作区不是操作系统沙箱。默认 API 只绑定 `127.0.0.1`；用户开启局域网访问时，仅尝试绑定操作系统选定的私有 IPv4 地址，不绑定所有网卡或公网地址。运行页还展示速度、首次加载和资源占用的粗略估算（不是实测）。Hugging Face 搜索和下载会联网；聊天和 Agent 模型请求只发往本地服务。
 
 定时页支持持久化的一次性、每小时、每天（固定 24 小时）、每周（固定 7 天）和自定义间隔（1–525600 分钟）提示词任务。任务只在应用保持打开且本地模型运行时执行；应用关闭期间错过的周期会跳过，不补跑、不自动启停模型。任务可单独勾选执行后推送摘要；已接入 Telegram Bot、Server 酱、PushPlus、钉钉、飞书、Bark 和通用 Webhook 的发送适配器。QQ 通过兼容 `{ title, content }` JSON 的自定义 Webhook/中转服务接入，不是 QQ 官方直连。推送凭据只在本次应用运行的内存中保存，退出后需重新输入；渠道配置不会自动发送测试消息，真实服务端点和实际送达尚未验证。
 
@@ -50,9 +50,9 @@ cargo run --features desktop --bin local-engine-manager
 cargo build --locked --release --features desktop --bin local-engine-manager
 ```
 
-当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。本轮 Linux x86_64 桌面程序已构建并在隔离图形环境启动检查；Windows x64 GUI EXE 已从 Linux 交叉构建，随包提供的 `WebView2Loader.dll` 需与 EXE 放在同一目录，Windows 仍需安装 WebView2 Runtime。Windows 未在真实 Windows 设备启动验证。
+当前 `tauri.conf.json` 关闭了安装包 bundle（`bundle.active: false`），因此该命令产出的是当前目标平台的可执行文件，不是 `.deb`、MSI 或 Windows 安装器。本次 Linux x86_64 Tauri release 桌面程序已成功构建。Windows x64 GNU GUI EXE 已从 Linux 交叉构建，测试包包含需与 EXE 同目录的 `WebView2Loader.dll`；Windows 还需要 WebView2 Runtime。Windows 未在真实 Windows 设备启动验证。
 
-**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 的命令确认是 UI 流程，不是操作系统级沙箱；命令可能访问工作区外文件或网络。v0.2.3 源码通过 23 项默认测试与 56 项桌面测试；Linux x86_64 桌面可执行文件从此版本构建。Windows x64 GUI EXE 由 GNU 工具链交叉构建，未在真实 Windows 设备运行；本次未构建 macOS。没有使用真实模型/媒体权重验证推理或图像/视频生成，发布包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
+**尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览，以及 `.deb`/MSI 等可分发安装包。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。本次 main 改动通过 23 项默认测试与 58 项桌面测试；Linux x86_64 release 构建和 Windows x64 GNU 交叉构建成功。Windows 未实机验证；两个构建包仅本地交付，未创建新 Release；本次未构建 macOS。没有使用真实模型/媒体权重验证推理或图像/视频生成，发布包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 
 ## 使用命令
 

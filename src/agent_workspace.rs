@@ -30,6 +30,7 @@ pub struct WorkspaceFile {
 pub struct WriteOutcome {
     pub written: bool,
     pub requires_confirmation: bool,
+    pub cancelled: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -37,6 +38,7 @@ pub struct WriteOutcome {
 pub struct CommandOutput {
     pub success: bool,
     pub timed_out: bool,
+    pub cancelled: bool,
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -266,6 +268,7 @@ pub fn write_file(
             return Ok(WriteOutcome {
                 written: false,
                 requires_confirmation: true,
+                cancelled: false,
             })
         }
         Ok(_) => {}
@@ -293,6 +296,7 @@ pub fn write_file(
     Ok(WriteOutcome {
         written: true,
         requires_confirmation: false,
+        cancelled: false,
     })
 }
 
@@ -374,6 +378,7 @@ pub fn run_command(
     Ok(CommandOutput {
         success: status.success() && !timed_out,
         timed_out,
+        cancelled: false,
         exit_code: status.code(),
         stdout,
         stderr,

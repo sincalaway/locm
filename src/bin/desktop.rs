@@ -30,6 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -662,6 +663,70 @@ fn open_creations_directory(app: AppHandle, kind: String) -> Result<String, Stri
     desktop_backend::open_creations_directory(&app, &kind)
 }
 
+fn confirm_agent_action(app: &AppHandle, title: &str, message: &str) -> bool {
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::YesNo)
+        .blocking_show()
+}
+
+fn agent_overwrite_confirmation_message(workspace: &str, path: &str, content: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(content.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let preview = content.chars().take(1_600).collect::<String>();
+    let omitted = content.chars().count().saturating_sub(1_600);
+    format!(
+        "工作文件夹：{workspace}\n目标文件：{path}\n新内容大小：{} 字节\n新内容 SHA-256：{digest}\n\n新内容预览（最多 1600 字符）：\n{preview}{}\n\n继续后会在工作文件夹内写入或覆盖此普通文件。",
+        content.len(),
+        if omitted > 0 {
+            format!("\n……另有 {omitted} 个字符未显示")
+        } else {
+            String::new()
+        }
+    )
+}
+
+fn agent_command_confirmation_message(workspace: &str, program: &str, args: &[String]) -> String {
+    let args_json = serde_json::to_string_pretty(args).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "程序：{program}\n参数数组（按此顺序传递，不经 shell 拼接）：\n{args_json}\n\n工作目录：{workspace}\n\n此程序仍将以当前用户的完整权限运行，并可能读取或修改工作文件夹外的数据、访问网络或启动子进程。工作目录不是沙箱。只有在确认程序、参数和权限风险后才选择“是”。"
+    )
+}
+
+#[cfg(test)]
+mod agent_confirmation_tests {
+    use super::{agent_command_confirmation_message, agent_overwrite_confirmation_message};
+
+    #[test]
+    fn command_confirmation_shows_exact_program_arguments_and_privilege_warning() {
+        let args = vec!["--prompt".to_string(), "hello world".to_string()];
+        let message = agent_command_confirmation_message("/tmp/work", "example", &args);
+
+        assert!(message.contains("程序：example"));
+        assert!(message.contains("\"hello world\""));
+        assert!(message.contains("工作目录：/tmp/work"));
+        assert!(message.contains("当前用户的完整权限"));
+        assert!(message.contains("工作目录不是沙箱"));
+    }
+
+    #[test]
+    fn overwrite_confirmation_includes_digest_preview_and_truncation_notice() {
+        let content = format!("{}后", "x".repeat(1_601));
+        let message = agent_overwrite_confirmation_message("/tmp/work", "note.txt", &content);
+
+        assert!(message.contains("工作文件夹：/tmp/work"));
+        assert!(message.contains("目标文件：note.txt"));
+        assert!(message.contains("新内容 SHA-256："));
+        assert!(message.contains("……另有 2 个字符未显示"));
+    }
+}
+
 #[tauri::command]
 async fn agent_workspace_path(workspace: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -694,12 +759,26 @@ async fn agent_read_file(workspace: String, relative_path: String) -> Result<Str
 
 #[tauri::command]
 async fn agent_write_file(
+    app: AppHandle,
     workspace: String,
     relative_path: String,
     content: String,
     allow_overwrite: bool,
 ) -> Result<agent_workspace::WriteOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if allow_overwrite
+            && !confirm_agent_action(
+                &app,
+                "LocM Agent · 确认写入或覆盖文件",
+                &agent_overwrite_confirmation_message(&workspace, &relative_path, &content),
+            )
+        {
+            return Ok(agent_workspace::WriteOutcome {
+                written: false,
+                requires_confirmation: false,
+                cancelled: true,
+            });
+        }
         agent_workspace::write_file(&workspace, &relative_path, &content, allow_overwrite)
     })
     .await
@@ -707,9 +786,20 @@ async fn agent_write_file(
 }
 
 #[tauri::command]
-async fn agent_delete_file(workspace: String, relative_path: String) -> Result<(), String> {
+async fn agent_delete_file(
+    app: AppHandle,
+    workspace: String,
+    relative_path: String,
+) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let message = format!(
+            "工作文件夹：{workspace}\n将删除普通文件：{relative_path}\n\n此操作不可撤销。只有在路径与文件均正确时才选择“是”。"
+        );
+        if !confirm_agent_action(&app, "LocM Agent · 确认删除文件", &message) {
+            return Ok(false);
+        }
         agent_workspace::delete_file(&workspace, &relative_path)
+            .map(|()| true)
     })
     .await
     .map_err(|error| format!("删除工作区文件失败：{error}"))?
@@ -717,11 +807,23 @@ async fn agent_delete_file(workspace: String, relative_path: String) -> Result<(
 
 #[tauri::command]
 async fn agent_run_command(
+    app: AppHandle,
     workspace: String,
     program: String,
     args: Vec<String>,
 ) -> Result<agent_workspace::CommandOutput, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let message = agent_command_confirmation_message(&workspace, &program, &args);
+        if !confirm_agent_action(&app, "LocM Agent · 确认运行命令", &message) {
+            return Ok(agent_workspace::CommandOutput {
+                success: false,
+                timed_out: false,
+                cancelled: true,
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
         agent_workspace::run_command(&workspace, &program, &args)
     })
     .await

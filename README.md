@@ -30,6 +30,8 @@ CPU x64 是目前唯一自动选择的硬件变体；CUDA、Vulkan、ARM64 和�
 
 现有模块分工、技术选型与数据流见[架构说明](docs/ARCHITECTURE.md)；LocM 与 LocModel 的 Agent 能力边界见[Agent 对照说明](docs/AGENT-PARITY.md)。
 
+便携桌面包的 Windows/Linux 依赖、解压启动、首次安装模型与故障排查见[部署与运行手册](docs/DEPLOYMENT.md)。
+
 ```sh
 cargo run --features desktop --bin local-engine-manager
 ```

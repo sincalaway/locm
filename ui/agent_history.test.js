@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { removeTaskAndPersist, splitTranscriptEntries } = require("./agent_history.js");
+const { migrateRequestScope, removeTaskAndPersist, splitTranscriptEntries } = require("./agent_history.js");
 
 function makeState() {
   return {
@@ -98,4 +98,47 @@ test("keeps legacy non-plan messages available in their original order", () => {
     conversation: [entries[0], entries[2]],
     details: [entries[1]],
   });
+});
+
+test("shows only current-request details while preserving the full conversation", () => {
+  const entries = [
+    { kind: "user", text: "创建 ewoe 文件夹", requestId: "request-1" },
+    { kind: "assistant", text: "执行计划（1 步）：\n1. 创建 ewoe", requestId: "request-1" },
+    { kind: "tool", text: "已创建 ewoe", requestId: "request-1" },
+    { kind: "assistant", text: "已创建文件夹", requestId: "request-1" },
+    { kind: "user", text: "读取 /tmp/test.txt", requestId: "request-2" },
+    { kind: "status", text: "正在读取文件", requestId: "request-2" },
+  ];
+
+  const result = splitTranscriptEntries(entries, "request-2");
+  assert.deepEqual(result.conversation, [entries[0], entries[3], entries[4]]);
+  assert.deepEqual(result.details, [entries[5]]);
+});
+
+test("migrates legacy task details to their user-request turns and selects the latest turn", () => {
+  const task = {
+    entries: [
+      { kind: "user", text: "创建 ewoe 文件夹", at: 1 },
+      { kind: "assistant", text: "执行计划（1 步）：\n1. 创建 ewoe", at: 2 },
+      { kind: "tool", text: "已创建 ewoe", at: 3 },
+      { kind: "assistant", text: "已创建文件夹", at: 4 },
+      { kind: "user", text: "读取 /tmp/test.txt", at: 10 },
+      { kind: "assistant", text: "执行计划（1 步）：\n1. 读取文件", at: 11 },
+      { kind: "tool", text: "已读取文件", at: 12 },
+    ],
+    execution: { steps: [
+      { id: "old", kind: "model", status: "completed", startedAt: 2 },
+      { id: "current", kind: "model", status: "completed", startedAt: 11 },
+    ] },
+  };
+  let nextId = 0;
+
+  assert.equal(migrateRequestScope(task, () => `request-${++nextId}`), "request-2");
+  const split = splitTranscriptEntries(task.entries, task.requestId);
+  assert.deepEqual(split.details.map(({ text }) => text), [
+    "执行计划（1 步）：\n1. 读取文件",
+    "已读取文件",
+  ]);
+  assert.equal(task.execution.steps[0].requestId, "request-1");
+  assert.equal(task.execution.steps[1].requestId, "request-2");
 });

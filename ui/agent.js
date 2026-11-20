@@ -141,6 +141,8 @@
         task.plan = Array.isArray(task.plan) ? task.plan.filter((step) => typeof step === "string").slice(0, 12) : [];
         task.turns = task.turns.filter((message) => message && ["user", "assistant"].includes(message.role) && typeof message.content === "string").slice(-MAX_TURNS);
         task.entries = Protocol.removeDuplicatePlanEntries(task.entries.filter((entry) => entry && typeof entry === "object" && typeof entry.text === "string" && ["user", "assistant", "tool", "status"].includes(entry.kind)).slice(-120));
+        History.migrateRequestScope(task, newId);
+        task.execution = Execution.normalizeExecution(task.execution);
         const pending = task.pendingAction;
         task.pendingAction = pending?.kind === "delete" && typeof pending.path === "string"
           ? pending
@@ -153,7 +155,7 @@
               : null;
         if (!task.pendingAction && task.status === "awaiting_approval") task.status = "paused";
         const recovery = Execution.recoverLoadedTask(task, Date.now());
-        if (recovery.notice) task.entries.push({ kind: "status", text: recovery.notice, at: Date.now() });
+        if (recovery.notice) task.entries.push({ kind: "status", text: recovery.notice, at: Date.now(), requestId: task.requestId });
         task.entries = task.entries.slice(-120);
         return task;
       });
@@ -532,7 +534,7 @@
     approval.hidden = true;
     if (!hasTask) return;
 
-    const transcriptEntries = History.splitTranscriptEntries(task.entries);
+    const transcriptEntries = History.splitTranscriptEntries(task.entries, task.requestId);
     transcriptEntries.conversation.forEach((entry) => {
       const card = document.createElement("article");
       card.className = `agent-entry ${entry.kind || "status"}`;
@@ -568,10 +570,11 @@
 
   function renderExecutionPanel(task, transcript, detailEntries = []) {
     const execution = task.execution || Execution.emptyExecution();
-    const fallbackEntries = execution.steps.length ? [] : detailEntries.filter((entry) => !(
+    const executionSteps = Execution.stepsForRequest(execution, task.requestId);
+    const fallbackEntries = executionSteps.length ? [] : detailEntries.filter((entry) => !(
       task.plan?.length && entry.kind === "assistant" && /^执行计划（\d+ 步）：/.test(entry.text || "")
     ));
-    if (!task.plan?.length && !execution.steps.length && !execution.recovery && !fallbackEntries.length) return;
+    if (!task.plan?.length && !executionSteps.length && !execution.recovery && !fallbackEntries.length) return;
     const panel = document.createElement("details");
     panel.className = "agent-execution-log";
     panel.open = task.status === "failed" || task.status === "paused" || Boolean(execution.recovery);
@@ -592,10 +595,10 @@
       });
       panel.append(plan);
     }
-    if (execution.steps.length) {
+    if (executionSteps.length) {
       const list = document.createElement("ol");
       list.className = "agent-execution-steps";
-      execution.steps.forEach((step) => {
+      executionSteps.forEach((step) => {
         const item = document.createElement("li");
         item.className = `agent-execution-step ${step.status}`;
         const title = document.createElement("strong");
@@ -732,7 +735,7 @@
   }
 
   function addEntry(task, kind, text) {
-    task.entries.push({ kind, text: String(text ?? ""), at: Date.now() });
+    task.entries.push({ kind, text: String(text ?? ""), at: Date.now(), requestId: task.requestId });
     task.updatedAt = Date.now();
     persist();
   }
@@ -1427,8 +1430,10 @@
   }
 
   function createTask(prompt, userText) {
+    const requestId = newId();
     const task = {
       id: newId(),
+      requestId,
       title: prompt.replace(/\s+/g, " ").slice(0, 54) || "新任务",
       workspace: WorkspaceState.workspaceForNewTask(state.workspace),
       status: "running",
@@ -1437,7 +1442,7 @@
       needsPlan: true,
       plan: [],
       turns: [{ role: "user", content: userText }],
-      entries: [{ kind: "user", text: prompt || "请阅读我附加的文件并完成任务。", at: Date.now() }],
+      entries: [{ kind: "user", text: prompt || "请阅读我附加的文件并完成任务。", at: Date.now(), requestId }],
       pendingAction: null,
       execution: Execution.emptyExecution(),
     };
@@ -1484,6 +1489,7 @@
         notify("当前任务绑定了另一个工作文件夹。请点“新任务”后再使用新选定的文件夹。", true);
         return;
       }
+      task.requestId = newId();
       if (task.execution?.recovery?.mode === "awaiting_user_instruction") {
         Execution.clearRecovery(task);
         addEntry(task, "status", "收到新的明确指示；已退出只生成计划的恢复模式。中断步骤仍保留在历史记录中。 ");
@@ -1584,7 +1590,7 @@
     const warning = step.kind === "tool" && step.risk === "side_effect"
       ? "应用正在关闭；当前工具操作已标为中断，结果可能未知或部分完成，不会自动重放。请检查工作区及相关进程。"
       : "应用正在关闭；当前步骤已标为中断。恢复时只生成计划，不会自动执行工具。";
-    task.entries.push({ kind: "status", text: warning, at: Date.now() });
+    task.entries.push({ kind: "status", text: warning, at: Date.now(), requestId: task.requestId });
     task.entries = task.entries.slice(-120);
     task.updatedAt = Date.now();
     persist();

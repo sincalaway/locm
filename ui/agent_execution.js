@@ -17,6 +17,7 @@
     return {
       id: step.id,
       kind: step.kind,
+      requestId: typeof step.requestId === "string" ? step.requestId : null,
       label: typeof step.label === "string" ? step.label.slice(0, 500) : "未命名步骤",
       status: step.status,
       startedAt: Number.isFinite(step.startedAt) ? step.startedAt : Date.now(),
@@ -46,6 +47,7 @@
     const step = {
       id: String(fields.id || `${now}-${Math.random().toString(16).slice(2)}`),
       kind: fields.kind,
+      requestId: typeof fields.requestId === "string" ? fields.requestId : typeof task.requestId === "string" ? task.requestId : null,
       label: String(fields.label || "未命名步骤").slice(0, 500),
       status: fields.status || "running",
       startedAt: Number.isFinite(fields.startedAt) ? fields.startedAt : now,
@@ -168,6 +170,11 @@
     return Boolean(task?.execution?.recovery);
   }
 
+  function stepsForRequest(value, requestId) {
+    const steps = normalizeExecution(value).steps;
+    return typeof requestId === "string" ? steps.filter((step) => step.requestId === requestId) : steps;
+  }
+
   return {
     MAX_STEPS,
     appendStep,
@@ -179,6 +186,7 @@
     normalizeExecution,
     recoverLoadedTask,
     setRecoveryMode,
+    stepsForRequest,
     toolsBlocked,
     updateStep,
   };

@@ -6,6 +6,7 @@ const {
   emptyExecution,
   interruptTask,
   recoverLoadedTask,
+  stepsForRequest,
   toolsBlocked,
   updateStep,
 } = require("./agent_execution.js");
@@ -43,6 +44,20 @@ test("records a tool failure without converting it to success", () => {
   assert.equal(task.execution.steps[0].status, "failed");
   assert.match(task.execution.steps[0].result, /需检查/);
   assert.equal(task.execution.currentStepId, null);
+});
+
+test("keeps execution steps across turns but selects only the current request for details", () => {
+  const task = makeTask({ requestId: "request-1" });
+  const oldStep = beginStep(task, { kind: "model", label: "旧请求：列出工作区" }, 22);
+  updateStep(task, oldStep.id, "completed", "旧请求结果", 23);
+
+  task.requestId = "request-2";
+  const currentStep = beginStep(task, { kind: "tool", label: "当前请求：读取文件", toolName: "read_file" }, 24);
+  updateStep(task, currentStep.id, "completed", "当前结果", 25);
+
+  assert.equal(task.execution.steps.length, 2);
+  assert.deepEqual(stepsForRequest(task.execution, task.requestId).map(({ id }) => id), [currentStep.id]);
+  assert.match(task.execution.steps[0].result, /旧请求结果/);
 });
 
 test("marks an in-flight side-effect tool interrupted on exit and restores it without replay", () => {

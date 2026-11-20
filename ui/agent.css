@@ -60,3 +60,5 @@
 .agent-tool-switch:has(input:focus-visible){outline:2px solid var(--green);outline-offset:2px}
 .agent-tool-switch:has(input:disabled){opacity:.48;cursor:not-allowed}
 @media(max-width:800px){.agent-tool-settings>summary{padding-right:10px;padding-left:10px}.agent-tool-settings-content{padding-right:10px;padding-left:10px}.agent-tool-switches{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.agent-execution-log>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:10px;font-weight:650}.agent-execution-log>summary::-webkit-details-marker{display:none}.agent-execution-log>summary::after{content:"⌄";float:right;color:var(--muted)}.agent-execution-log[open]>summary::after{content:"⌃"}.agent-execution-activity{display:grid;gap:7px}.agent-execution-activity .agent-entry{margin:0}

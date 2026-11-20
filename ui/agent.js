@@ -213,6 +213,17 @@
 
   function renderToolSettings() {
     const container = $("#agent-tool-switches");
+    const masterSwitch = $("#agent-tool-all");
+    if (!masterSwitch.dataset.initialized) {
+      masterSwitch.addEventListener("change", () => {
+        if (state.busy || activeTask()?.pendingAction) return renderToolSettings();
+        const previous = state.enabledTools;
+        state.enabledTools = Protocol.setAllToolsEnabled(masterSwitch.checked);
+        if (!saveEnabledTools()) state.enabledTools = previous;
+        renderToolSettings();
+      });
+      masterSwitch.dataset.initialized = "true";
+    }
     if (!container.dataset.initialized) {
       for (const tool of Protocol.TOOL_OPTIONS) {
         const label = document.createElement("label");
@@ -245,13 +256,21 @@
     }
     const enabledCount = state.enabledTools.length;
     $("#agent-tool-count").textContent = `${enabledCount}/8 已启用`;
+    const masterState = Protocol.masterToolSwitchState(state.enabledTools);
     const pending = Boolean(activeTask()?.pendingAction);
     const locked = state.busy || pending;
+    masterSwitch.checked = masterState.checked;
+    masterSwitch.indeterminate = masterState.indeterminate;
+    masterSwitch.disabled = locked;
+    masterSwitch.setAttribute("aria-checked", masterState.indeterminate ? "mixed" : String(masterState.checked));
+    masterSwitch.setAttribute("aria-label", masterState.indeterminate
+      ? `${enabledCount}/8 个工具已启用；切换可全部启用`
+      : masterState.checked ? "关闭全部八个工作区工具" : "启用全部八个工作区工具");
     $("#agent-tool-settings-note").textContent = state.busy
       ? "任务执行期间暂不能切换；设置保存在本机。关闭的工具不会提供给模型或执行。"
       : pending
         ? "请先批准或拒绝待确认操作，再修改工具开关。设置保存在本机。"
-        : "可分别启用或关闭；设置保存在本机。关闭后不会提供给模型，也无法执行。";
+        : "可使用总开关全部启用或关闭，也可分别设置；设置保存在本机。关闭的工具不会提供给模型或执行。";
     container.querySelectorAll("[data-agent-tool]").forEach((input) => {
       input.checked = state.enabledTools.includes(input.dataset.agentTool);
       input.disabled = locked;

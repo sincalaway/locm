@@ -83,7 +83,7 @@ v0.2.14 的平台安装包只有 Windows x64 NSIS 安装器，Release 另附 `SH
 
 `create_folder` 与 `edit_file` 都通过原生工作区后端执行；前者是幂等空目录创建，后者只修改唯一精确匹配的既有 UTF-8 普通文件。`edit_file` 的首次调用不写入，仅显示待确认状态；用户批准后还必须通过系统原生确认，后端会重新读取、验证匹配与路径，再用同目录临时文件原子替换。Rust 与前端回归覆盖工具意图路由、工具结果续接、创建/编辑成功、确认边界、缺失或重复匹配、路径穿越和符号链接逃逸。两个工具均未在用户的 Windows 电脑实机运行验证。
 
-本版回归结果：默认 Rust `cargo test --locked` 23/23、桌面 Rust `cargo test --locked --features desktop --bin local-engine-manager` 90/90、JavaScript `node --test ui/*.test.js` 54/54 通过。Rust 格式检查、修改文件的 JavaScript 语法检查和 `git diff --check` 也通过。Agent 任务展示回归覆盖成功任务中只显示请求与回复、执行事件收进详情，以及历史记录兼容；原有工具协议回归覆盖标准/紧凑/旧版函数调用、MiniCPM5 XML、未知工具/参数拒绝、八工具启停与禁用工具拒绝、工具意图路由与工具结果续接。Agent 工具仍未在真实 Windows 设备或真实模型上验证。
+本版回归结果：默认 Rust `cargo test --locked` 23/23、桌面 Rust `cargo test --locked --features desktop --bin local-engine-manager` 90/90、JavaScript `node --test ui/*.test.js` 56/56 通过。Rust 格式检查、修改文件的 JavaScript 语法检查和 `git diff --check` 也通过。Agent 任务展示回归覆盖成功任务中只显示请求与回复、执行事件收进详情，以及历史记录兼容；工具设置回归覆盖总开关全开/全关、部分开启的混合状态与折叠布局，原有工具协议回归覆盖标准/紧凑/旧版函数调用、MiniCPM5 XML、未知工具/参数拒绝、八工具独立启停与禁用工具拒绝、工具意图路由与工具结果续接。工具设置区默认收起且可展开，总开关在折叠时仍可操作。Agent 工具仍未在真实 Windows 设备或真实模型上验证。
 
 Rust 的 Windows `raw-dylib` 链接会将 `kernel32.dll` 解析为 `-lKernel32`；Linux MinGW 的标准导入库名称为小写 `libkernel32.a`，而 GNU ld 在 Linux 大小写敏感的文件系统上无法用大写名称找到它。此仓库用 `./scripts/build-windows-gnu.sh` 选择专用链接包装器，仅对该库名做小写规范化；它不创建临时导入库别名，也不修改全局或系统 linker 配置。Windows 原生 MSVC 工作流与普通 Cargo 构建保持不变。
 

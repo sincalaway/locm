@@ -1,6 +1,13 @@
 # llama-server-launcher-rs
 一个独立的 Rust MVP：保留原有 `llama-server` 配置启动示例，并新增两个彼此独立的本地引擎安装流程。它不是 LocModel 的源码，也不包含 LocModel 品牌资产或官方背书。
 
+## v0.2.17 更新
+
+- Agent 新增工作区目录树与文件变更清单；只读访问与工作区读写都需系统原生确认，并由 Rust 后端按任务会话、随机 256 位令牌、授权范围和规范化目录共同校验。令牌不持久化，重启后需重新确认；渲染器参数不能自行升级只读权限。公开网页搜索与读取为可选能力。
+- 聊天输入支持选择、拖放或粘贴小型文本附件。
+- 验证：Rust 全部测试 124/124（lib 6、main 17、desktop 101），JavaScript 回归 72/72 通过。本次发布仅提供 Windows x64 NSIS 安装器。
+- 安装器从 Linux 交叉构建且未代码签名；没有在真实 Windows 设备启动验证。运行需要 WebView2 Runtime，安装包不含推理引擎或模型权重。
+
 ## v0.2.16 更新
 
 - Agent 的执行详情现在按每轮用户请求隔离显示；完整对话历史仍保留，新请求不会再显示上一轮的计划、工具结果和执行步骤。旧版本地任务记录会迁移请求标识。
@@ -96,7 +103,7 @@ CPU x64 是目前唯一自动选择的硬件变体；CUDA、Vulkan、ARM64 和�
 
 仓库现在包含一个独立桌面目标，UI 直接调用同一份 Rust 引擎管理器，不会另写一套下载逻辑。开发环境可用以下命令启动：
 
-现有模块分工、技术选型与数据流见[架构说明](docs/ARCHITECTURE.md)；LocM 与 LocModel 的 Agent 能力边界见[Agent 对照说明](docs/AGENT-PARITY.md)。
+现有模块分工、技术选型与数据流见[架构说明](docs/ARCHITECTURE.md)；LocM 与 LocModel 的 Agent 能力边界见[Agent 对照说明](docs/AGENT-PARITY.md)；指定重建版的可验证经验及 LocM 改进见[重建版经验说明](docs/RECONSTRUCTION-LESSONS.md)。
 
 便携桌面包的 Windows/Linux 依赖、解压启动、首次安装模型与故障排查见[部署与运行手册](docs/DEPLOYMENT.md)。
 
@@ -166,6 +173,8 @@ cargo run --locked --bin llama-server-launcher-rs -- .\engine.json
 - 运行时更新流程会另存新版本，不覆盖旧版；安装完成后不会自动切换或启动。
 - 本 MVP 的自动引擎安装支持 Windows x64 与 Linux x86_64 CPU 官方包；Linux llama.cpp 使用安全 tar.gz 解包，stable-diffusion.cpp 仍使用 ZIP。桌面目标以 Tauri 2 实现，默认 feature 仍保持 CLI，避免未显式选择桌面时要求本机具备 WebView 系统库。
 - 新建配置默认将本地 `llama-server` API 绑定到 `127.0.0.1:8666`；已经保存的端口设置不会因更新而被覆盖。局域网访问默认关闭，打开后才尝试绑定一个私有 IPv4 地址。
+
+**复用已有 llama-server：** 可在“设置 → 复用已有 llama-server”选择本机的 `llama-server`（Windows 为 `llama-server.exe`）。选择后能力探测与启动优先使用该文件；清空路径则回退到 LocM 引擎管理的版本。LocM 不会安装或更新该文件，启动参数仍只采用它在 `--help` 中确认支持的选项；当前启动参数仍为 CPU 配置，不会因此启用 GPU 推理。重建版的证据边界、取舍和界面布局借鉴见[重建版经验说明](docs/RECONSTRUCTION-LESSONS.md)。
 
 ## 开发与测试
 

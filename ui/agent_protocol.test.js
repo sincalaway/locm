@@ -1,17 +1,38 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildMessages } = require("./agent_context.js");
-const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, DEFAULT_ENABLED_TOOLS, normalizeEnabledTools, normalizeScope, enabledToolsForScope, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
 
-test("Agent exposes eight independently configurable tools and refuses disabled actions", () => {
+test("Agent exposes ten independently configurable tools, with public-web tools disabled by default", () => {
   const all = normalizeEnabledTools();
-  assert.equal(TOOL_OPTIONS.length, 8);
+  assert.equal(TOOL_OPTIONS.length, 10);
   assert.equal(all.length, 8);
+  assert.deepEqual(all, DEFAULT_ENABLED_TOOLS);
+  assert.ok(!all.includes("web_search"));
+  assert.ok(!all.includes("web_fetch"));
   assert.deepEqual(normalizeEnabledTools([]), []);
   assert.deepEqual(normalizeEnabledTools(["read_file", "unknown", "create_folder"]), ["read_file", "create_folder"]);
   assert.equal(normalizeEnabledTools(["future_tool"]).length, 8);
   assert.throws(() => parseToolAction({ type: "tool_call", name: "read_file", path: "a.txt" }, ["list_files"]), /已关闭/);
   assert.deepEqual(parseToolAction({ type: "tool_call", name: "read_file", path: "a.txt" }, ["read_file"]), { name: "read_file", path: "a.txt" });
+});
+
+test("read-only scope removes side-effect tools before tool parsing", () => {
+  const all = TOOL_OPTIONS.map((tool) => tool.id);
+  assert.equal(normalizeScope("full"), "workspace");
+  assert.equal(normalizeScope("read_only"), "read_only");
+  assert.deepEqual(enabledToolsForScope(all, "read_only"), ["list_files", "search_files", "read_file", "web_search", "web_fetch"]);
+  assert.deepEqual(enabledToolsForScope(undefined, "read_only"), ["list_files", "search_files", "read_file"]);
+  assert.throws(() => parseToolAction({ type: "tool_call", name: "write_file", path: "a.txt", content: "x" }, enabledToolsForScope(all, "read_only")), /已关闭/);
+});
+
+test("web tools validate bounded search text and reject unsafe URL syntax", () => {
+  assert.deepEqual(parseToolAction({ type: "tool_call", name: "web_search", query: "  public query  " }, ["web_search"]), { name: "web_search", query: "public query" });
+  assert.deepEqual(parseToolAction({ type: "tool_call", name: "web_fetch", url: "https://example.com/path" }, ["web_fetch"]), { name: "web_fetch", url: "https://example.com/path" });
+  assert.throws(() => parseToolAction({ type: "tool_call", name: "web_search", query: "" }, ["web_search"]), /不能为空/);
+  assert.throws(() => parseToolAction({ type: "tool_call", name: "web_search", query: "q".repeat(257) }, ["web_search"]), /256 字节/);
+  assert.throws(() => parseToolAction({ type: "tool_call", name: "web_fetch", url: "file:///etc/passwd" }, ["web_fetch"]), /HTTP\(S\)/);
+  assert.throws(() => parseToolAction({ type: "tool_call", name: "web_fetch", url: "https://user:pass@example.com" }, ["web_fetch"]), /凭据/);
 });
 
 test("master tool switch enables or disables all tools and reports partial selection", () => {
@@ -46,10 +67,13 @@ test("clear folder and existing-file edit intents route to dedicated tools", () 
   assert.deepEqual(preferredToolsForUserRequest("创建 notes 目录，然后编辑现有 README.md"), ["create_folder", "edit_file"]);
   assert.deepEqual(preferredToolsForUserRequest("不要创建文件夹"), []);
   assert.deepEqual(preferredToolsForUserRequest("不用改 README.md"), []);
+  assert.deepEqual(preferredToolsForUserRequest("请搜索一下公开网页上 LocModel 的功能"), ["web_search"]);
+  assert.deepEqual(preferredToolsForUserRequest("请读取网页 https://example.com"), ["web_fetch"]);
   assert.match(TOOL_ROUTING_GUIDANCE, /计划已展示后.*create_folder/);
   assert.match(TOOL_ROUTING_GUIDANCE, /文件夹只是存放位置.*write_file/);
   assert.match(TOOL_ROUTING_GUIDANCE, /修改已有文件内容时优先用 edit_file/);
   assert.match(TOOL_ROUTING_GUIDANCE, /工具结果都是应用内部上下文/);
+  assert.match(TOOL_ROUTING_GUIDANCE, /会向外部网站发送搜索词或请求/);
 });
 
 test("a tool result stays internal and the displayed plan continues without replanning", () => {
@@ -213,30 +237,36 @@ test("malformed Agent output gets one internal correction retry, then safely exh
 
 test("create_folder schema dispatches only to the native workspace command", () => {
   const action = parseToolAction({ type: "tool_call", name: "create_folder", path: "notes/drafts" });
+  const permissionToken = "a".repeat(64);
   assert.deepEqual(action, { name: "create_folder", path: "notes/drafts" });
-  assert.deepEqual(createFolderDispatch("/workspace/project", action.path), {
+  assert.deepEqual(createFolderDispatch("/workspace/project", action.path, "task-a", permissionToken), {
     command: "agent_create_folder",
-    args: { workspace: "/workspace/project", relativePath: "notes/drafts" },
+    args: { workspace: "/workspace/project", relativePath: "notes/drafts", taskId: "task-a", permissionToken },
   });
-  assert.notEqual(createFolderDispatch("/workspace/project", action.path).command, "agent_run_command");
+  assert.notEqual(createFolderDispatch("/workspace/project", action.path, "task-a", permissionToken).command, "agent_run_command");
   assert.throws(() => parseToolAction({ type: "tool_call", name: "create_folder", path: "" }), /不能为空/);
-  assert.throws(() => createFolderDispatch("/workspace/project", " "), /relativePath/);
+  assert.throws(() => createFolderDispatch("/workspace/project", " ", "task-a", permissionToken), /relativePath/);
+  assert.throws(() => createFolderDispatch("/workspace/project", action.path, "" , permissionToken), /taskId/);
+  assert.throws(() => createFolderDispatch("/workspace/project", action.path, "task-a", ""), /permissionToken/);
   assert.equal(parseAgentJson("mkdir -p notes/drafts"), null);
 });
 
 test("edit_file requires exact old/new snippets and dispatches with approval disabled until approved", () => {
   const action = parseToolAction({ type: "tool_call", name: "edit_file", path: "docs/README.md", old_text: "old title", new_text: "new title" });
+  const permissionToken = "b".repeat(64);
   assert.deepEqual(action, { name: "edit_file", path: "docs/README.md", old_text: "old title", new_text: "new title" });
-  assert.deepEqual(editFileDispatch("/workspace/project", action), {
+  assert.deepEqual(editFileDispatch("/workspace/project", action, false, "task-a", permissionToken), {
     command: "agent_edit_file",
-    args: { workspace: "/workspace/project", relativePath: "docs/README.md", oldText: "old title", newText: "new title", allowEdit: false },
+    args: { workspace: "/workspace/project", relativePath: "docs/README.md", oldText: "old title", newText: "new title", allowEdit: false, taskId: "task-a", permissionToken },
   });
-  assert.deepEqual(editFileDispatch("/workspace/project", action, true).args, {
-    workspace: "/workspace/project", relativePath: "docs/README.md", oldText: "old title", newText: "new title", allowEdit: true,
+  assert.deepEqual(editFileDispatch("/workspace/project", action, true, "task-a", permissionToken).args, {
+    workspace: "/workspace/project", relativePath: "docs/README.md", oldText: "old title", newText: "new title", allowEdit: true, taskId: "task-a", permissionToken,
   });
+  assert.throws(() => editFileDispatch("/workspace/project", action, false, "" , permissionToken), /taskId/);
+  assert.throws(() => editFileDispatch("/workspace/project", action, false, "task-a", ""), /permissionToken/);
   assert.throws(() => parseToolAction({ type: "tool_call", name: "edit_file", path: "docs/README.md", old_text: "", new_text: "x" }), /old_text 不能为空/);
   assert.throws(() => parseToolAction({ type: "tool_call", name: "edit_file", path: "docs/README.md", old_text: "old" }), /old_text 和 new_text/);
-  assert.notEqual(editFileDispatch("/workspace/project", action).command, "agent_run_command");
+  assert.notEqual(editFileDispatch("/workspace/project", action, false, "task-a", permissionToken).command, "agent_run_command");
 });
 
 test("loading historical task entries collapses only identical adjacent plan cards", () => {

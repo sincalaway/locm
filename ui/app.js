@@ -259,10 +259,12 @@
       try {
         state.runCapabilities = await invoke("server_capabilities");
         renderRunPreferences();
+        updateQuickstart();
       } catch (error) {
         state.runCapabilities = { host: false, port: false, ctxSize: false, flashAttention: false, cacheTypeK: false, cacheTypeV: false, nGpuLayers: false };
         renderRunCapabilityStatus();
-        $("#run-capability-summary").textContent = `未检测到可用的已安装 llama-server：${error}`;
+        $("#run-capability-summary").textContent = `当前 llama-server 不可用：${error}`;
+        updateQuickstart();
         refreshRuntime();
       }
     })();
@@ -292,7 +294,7 @@
     if (capabilities?.cacheTypeK && capabilities?.cacheTypeV) supported.push("--cache-type-k/v");
     const summary = capabilities
       ? `已检测服务器参数：${supported.length ? supported.join("、") : "未发现可选加速参数"}。`
-      : "正在检查已安装 llama-server 的参数…";
+      : "正在检查当前 llama-server 的参数…";
     $("#run-capability-summary").textContent = summary;
     const contextSupported = Boolean(capabilities?.ctxSize);
     const contextLocked = Boolean(state.runtime.running);
@@ -330,9 +332,9 @@
     startButton.disabled = Boolean(state.runtime.running) || !modelSelected || !requiredArgsSupported;
     const prerequisiteNote = $("#run-prerequisite-note");
     const blockedReason = !capabilities
-      ? "正在检查已安装 llama-server 的参数能力…"
+      ? "正在检查当前 llama-server 的参数能力…"
       : !requiredArgsSupported
-        ? "无法启动：未从已安装 llama-server 的 --help 确认必需的 --model、--host、--port 参数。请先安装或检查下方的 llama.cpp 引擎；不会发送未确认的参数。"
+        ? "无法启动：未从当前 llama-server 的 --help 确认必需的 --model、--host、--port 参数。请检查已选引擎或安装 LocM 管理的 llama.cpp；不会发送未确认的参数。"
         : state.runtime.running
           ? "模型已在运行；如需启动其他模型，请先停止当前模型。"
           : !modelSelected
@@ -505,12 +507,26 @@
     if (!hardwareStep) return;
     const hardwareReady = Boolean(state.hardware);
     const chatEngine = state.engines.get("llama.cpp");
-    const engineReady = Boolean(chatEngine?.installedVersions?.length);
+    const externalEngineSelected = Boolean(state.settings?.llamaServerPath);
+    const externalEngineVerified = Boolean(state.runCapabilities?.model && state.runCapabilities?.host && state.runCapabilities?.port);
+    const engineReady = externalEngineSelected ? externalEngineVerified : Boolean(chatEngine?.installedVersions?.length);
     const modelCount = state.models.length;
     const engineBusy = state.engineInstallBusy.has("chat");
     const engineAction = $("#quickstep-engine-action");
     if (engineAction) {
-      engineAction.textContent = engineBusy ? "查看安装进度" : "查看引擎管理";
+      if (engineBusy) {
+        engineAction.href = "#overview-engines";
+        engineAction.textContent = "查看安装进度";
+      } else if (externalEngineSelected) {
+        engineAction.href = externalEngineVerified ? "#settings" : state.runCapabilities ? "#settings" : "#run";
+        engineAction.textContent = externalEngineVerified ? "管理外部引擎" : state.runCapabilities ? "检查引擎设置" : "验证外部引擎";
+      } else if (!engineReady) {
+        engineAction.href = "#settings";
+        engineAction.textContent = "复用已有引擎";
+      } else {
+        engineAction.href = "#overview-engines";
+        engineAction.textContent = "查看引擎管理";
+      }
     }
     const activeStep = !hardwareReady ? "hardware" : !engineReady ? "engine" : modelCount === 0 ? "models" : null;
     const updateStep = (name, complete, message) => {
@@ -524,7 +540,20 @@
     };
     updateStep("hardware", hardwareReady, hardwareReady ? "本机硬件信息已读取" : "硬件信息尚未读取");
     const engineMessage = state.engineInstallMessages.get("chat");
-    updateStep("engine", engineReady, engineBusy ? (engineMessage || "正在准备安装…") : engineReady ? "llama.cpp 已安装" : state.enginesLoaded ? (state.mediaInstallSupported ? "安装前会展示版本、大小和官方来源" : "当前平台暂不可自动安装") : "正在读取引擎安装状态…");
+    const engineStatus = engineBusy
+      ? (engineMessage || "正在准备安装…")
+      : externalEngineSelected
+        ? externalEngineVerified
+          ? "外部 llama-server 参数检查通过"
+          : state.runCapabilities
+            ? "外部引擎不可用；请检查路径或恢复 LocM 引擎"
+            : "已选择外部引擎；打开运行页进行参数检查"
+        : engineReady
+          ? "llama.cpp 已安装"
+          : state.enginesLoaded
+            ? "可在概览安装，或在设置复用已有引擎"
+            : "正在读取引擎安装状态…";
+    updateStep("engine", engineReady, engineStatus);
     updateStep("models", modelCount > 0, modelCount ? `已找到 ${modelCount} 个本地 GGUF 模型` : "导入 GGUF 或从模型库下载");
   }
   async function loadHardware() {
@@ -2090,10 +2119,12 @@
       $("#settings-language").value = state.settings.language || "zh-CN";
       $("#settings-appearance").value = state.settings.appearance || "system";
       $("#settings-port").value = state.settings.apiPort || 8666;
+      $("#settings-llama-server-path").value = state.settings.llamaServerPath || "";
       applyAppearance(state.settings.appearance);
       applyLanguage(state.settings.language);
       renderModelStorage();
       renderComfyUiDirectoryState();
+      updateQuickstart();
     } catch (error) { $("#settings-status").textContent = `无法读取设置：${error}`; }
   }
   function applyAppearance(value) {
@@ -2122,7 +2153,7 @@
     if (privacy?.lastChild?.nodeType === Node.TEXT_NODE) privacy.lastChild.textContent = text("本地管理", "Local");
     const settingText = [
       ["#page-settings .page-intro h1", "设置", "Settings"],
-      ["#page-settings .page-intro .intro-copy", "配置模型和作品目录、界面外观与本地 API 端口。", "Configure model and output folders, appearance, and the local API port."],
+      ["#page-settings .page-intro .intro-copy", "配置模型和作品目录、界面外观、本地 API 端口与可选推理引擎。", "Configure model and output folders, appearance, the local API port, and an optional inference engine."],
       ["#page-settings .settings-stack article:nth-of-type(1) h2", "模型存放", "Model storage"],
       ["label[for='settings-model-dir']", "模型目录", "Model folder"],
       ["#choose-model-dir", "选择目录", "Choose folder"],
@@ -2143,10 +2174,17 @@
       ["#check-app-update", "检查应用更新", "Check for app updates"],
       ["#page-settings .settings-actions button[type='submit']", "保存设置", "Save settings"],
       ["#page-settings .notice strong", "本地数据", "Local data"],
-      ["#page-settings .notice span", "对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。", "Chats and models stay on this device. Hugging Face search/download connects to its website; chat content is not uploaded there."]
+      ["#page-settings .notice span", "对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。", "Chats and models stay on this device. Hugging Face search/download connects to its website; chat content is not uploaded there."],
+      ["#external-engine-heading", "复用已有 llama-server", "Use an existing llama-server"],
+      ["#settings-llama-server-path-label", "llama-server 可执行文件", "llama-server executable"],
+      ["#choose-llama-server-file", "选择文件", "Choose file"],
+      ["#clear-llama-server-path", "恢复 LocM 管理的引擎", "Use the LocM-managed engine"],
+      ["#settings-llama-server-path-note", "选择后优先使用该文件；LocM 会检查其 --help 并仅传入已确认支持的参数。LocM 不会下载或更新此文件。当前仍按 CPU 参数启动，不代表已启用 GPU 推理。清空路径后使用 LocM 引擎管理中的 llama.cpp。", "When selected, LocM prefers this file and checks its --help before passing supported arguments. LocM will not download or update it. Startup remains CPU-configured; this does not enable GPU inference. Clear the path to use the llama.cpp engine managed by LocM."],
+      ["#settings-llama-server-path", "留空使用 LocM 管理的引擎", "Leave blank to use the LocM-managed engine"]
     ];
     settingText.forEach(([selector, zh, en]) => { const element = $(selector); if (element) element.textContent = text(zh, en); });
     $("#settings-creations-dir").placeholder = text("留空使用应用默认目录", "Leave blank to use the app's default folder");
+    $("#settings-llama-server-path").placeholder = text("留空使用 LocM 管理的引擎", "Leave blank to use the LocM-managed engine");
     const appearanceOptions = $("#settings-appearance").options;
     if (appearanceOptions.length === 3) {
       ["跟随系统", "浅色", "深色"].forEach((zh, index) => { appearanceOptions[index].textContent = text(zh, ["System", "Light", "Dark"][index]); });
@@ -2195,6 +2233,7 @@
       ...(state.settings || {}),
       modelDirectory: $("#settings-model-dir").value.trim(),
       creationsDirectory: $("#settings-creations-dir").value.trim() || null,
+      llamaServerPath: $("#settings-llama-server-path").value.trim() || null,
       language: $("#settings-language").value,
       appearance: $("#settings-appearance").value,
       apiPort: Number($("#settings-port").value),
@@ -2204,7 +2243,8 @@
       state.settings = await invoke("save_app_settings", { settings });
       status.textContent = "已保存"; applyAppearance(settings.appearance); applyLanguage(settings.language);
       renderComfyUiDirectoryState();
-      await Promise.all([refreshRuntime(), loadModels(), refreshModelStorage()]);
+      await Promise.all([refreshRuntime(), loadModels(), refreshModelStorage(), loadRunCapabilities(true)]);
+      updateQuickstart();
       showToast("设置已保存");
     } catch (error) { status.textContent = `保存失败：${error}`; }
   }
@@ -2219,6 +2259,13 @@
       const path = await invoke("choose_directory");
       if (path) $("#settings-creations-dir").value = path;
     } catch (error) { showToast(`选择作品目录失败：${error}`, "error"); }
+  }
+
+  async function chooseLlamaServerFile() {
+    try {
+      const path = await invoke("choose_llama_server_file");
+      if (path) $("#settings-llama-server-path").value = path;
+    } catch (error) { showToast(`选择 llama-server 失败：${error}`, "error"); }
   }
 
   async function chooseOverviewModelDirectory() {
@@ -2707,6 +2754,8 @@
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#choose-model-dir").addEventListener("click", chooseModelDirectory);
   $("#choose-creations-dir").addEventListener("click", chooseCreationsDirectory);
+  $("#choose-llama-server-file").addEventListener("click", chooseLlamaServerFile);
+  $("#clear-llama-server-path").addEventListener("click", () => { $("#settings-llama-server-path").value = ""; });
   $("#settings-language").addEventListener("change", (event) => applyLanguage(event.target.value));
   $("#settings-appearance").addEventListener("change", (event) => applyAppearance(event.target.value));
   $("#check-app-update").addEventListener("click", checkAppUpdate);

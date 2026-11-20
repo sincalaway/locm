@@ -5,7 +5,7 @@
 })(globalThis, function () {
   const CONTINUATION_PREFIX = "【LocM 应用内部继续指令；不是用户新请求】";
   const TOOL_RESULT_PREFIX = "【LocM 应用内部工作区工具结果；不是用户新请求】";
-  const TOOL_ROUTING_GUIDANCE = "工具意图路由：仅当用户要新建的目标本身是文件夹或目录时，才在计划已展示后调用 create_folder；如果文件夹只是存放位置，而用户要在其中新建文件、脚本或命令文件，应使用 write_file，不能把存放位置误当成新建目录目标。不得用 write_file 或 run_command 创建目录。用户要求修改已有文件内容时优先用 edit_file；先用 read_file 获取精确 old_text，再提交唯一匹配的 old_text/new_text，不得为了省事用 write_file 重写整个现有文件。缺少文件内容或精确片段时先读取；匹配不存在或不唯一时安全停止并说明。每次工具结果都是应用内部上下文，不是用户新任务；保持当前已展示计划并实时继续下一步，不要重新规划或停在通用进度。edit_file 和其他副作用必须保留用户审批与系统原生确认。";
+  const TOOL_ROUTING_GUIDANCE = "工具意图路由：仅当用户要新建的目标本身是文件夹或目录时，才在计划已展示后调用 create_folder；如果文件夹只是存放位置，而用户要在其中新建文件、脚本或命令文件，应使用 write_file，不能把存放位置误当成新建目录目标。不得用 write_file 或 run_command 创建目录。用户要求修改已有文件内容时优先用 edit_file；先用 read_file 获取精确 old_text，再提交唯一匹配的 old_text/new_text，不得为了省事用 write_file 重写整个现有文件。缺少文件内容或精确片段时先读取；匹配不存在或不唯一时安全停止并说明。web_search/web_fetch 只在用户明确需要公开网页信息时使用；它们会向外部网站发送搜索词或请求。每次工具结果都是应用内部上下文，不是用户新任务；保持当前已展示计划并实时继续下一步，不要重新规划或停在通用进度。edit_file 和其他副作用必须保留用户审批与系统原生确认。";
   const encoder = new TextEncoder();
   const TOOL_ARGUMENTS = Object.freeze({
     list_files: { required: ["path"], types: { path: "string" } },
@@ -16,7 +16,11 @@
     edit_file: { required: ["path", "old_text", "new_text"], types: { path: "string", old_text: "string", new_text: "string" } },
     delete_file: { required: ["path"], types: { path: "string" } },
     run_command: { required: ["program", "args"], types: { program: "string", args: "array" } },
+    web_search: { required: ["query"], types: { query: "string" } },
+    web_fetch: { required: ["url"], types: { url: "string" } },
   });
+  const DEFAULT_ENABLED_TOOLS = Object.freeze(["list_files", "search_files", "read_file", "create_folder", "write_file", "edit_file", "delete_file", "run_command"]);
+  const READ_ONLY_TOOLS = Object.freeze(["list_files", "search_files", "read_file", "web_search", "web_fetch"]);
   const TOOL_OPTIONS = Object.freeze([
     { id: "list_files", label: "列出文件", description: "查看工作区内的文件与子目录。" },
     { id: "search_files", label: "搜索文本", description: "搜索工作区内受限大小的UTF-8文本。" },
@@ -26,13 +30,21 @@
     { id: "edit_file", label: "编辑文件", description: "按唯一精确匹配修改文件；需要批准。" },
     { id: "delete_file", label: "删除文件", description: "删除工作区内的普通文件；需要批准。" },
     { id: "run_command", label: "运行命令", description: "在工作区目录启动程序；需要批准。" },
+    { id: "web_search", label: "网页搜索", description: "向外部搜索服务发送查询词；默认关闭，仅在需要公开网页信息时启用。" },
+    { id: "web_fetch", label: "读取网页", description: "读取受限的公开 HTTP(S) 网页；不会访问本机或私有地址。" },
   ]);
   function normalizeEnabledTools(value) {
     const all = TOOL_OPTIONS.map((tool) => tool.id);
-    if (!Array.isArray(value)) return all;
+    if (!Array.isArray(value)) return [...DEFAULT_ENABLED_TOOLS];
     const supplied = new Set(value.filter((item) => typeof item === "string"));
-    if (value.length && !all.some((tool) => supplied.has(tool))) return all;
+    if (value.length && !all.some((tool) => supplied.has(tool))) return [...DEFAULT_ENABLED_TOOLS];
     return all.filter((tool) => supplied.has(tool));
+  }
+
+  function normalizeScope(value) { return value === "read_only" ? "read_only" : "workspace"; }
+  function enabledToolsForScope(enabledTools, scope) {
+    const enabled = normalizeEnabledTools(enabledTools);
+    return normalizeScope(scope) === "read_only" ? enabled.filter((name) => READ_ONLY_TOOLS.includes(name)) : enabled;
   }
 
   function setAllToolsEnabled(enabled) {
@@ -267,20 +279,39 @@
       }
       return { name, program: action.program, args: action.args };
     }
+    if (name === "web_search") {
+      if (typeof action.query !== "string" || !action.query.trim() || encoder.encode(action.query).length > 256 || /[\u0000-\u001f\u007f]/u.test(action.query)) {
+        throw new Error("网页搜索词不能为空、不能含控制字符，且最多为 256 字节");
+      }
+      return { name, query: action.query.trim() };
+    }
+    if (name === "web_fetch") {
+      if (typeof action.url !== "string" || !action.url.trim() || encoder.encode(action.url).length > 2048 || /[\u0000-\u001f\u007f]/u.test(action.url)) {
+        throw new Error("网页地址不能为空、不能含控制字符，且最多为 2048 字节");
+      }
+      let parsed;
+      try { parsed = new URL(action.url); } catch { throw new Error("网页地址无效"); }
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("只允许不含凭据的 HTTP(S) 网页地址");
+      return { name, url: parsed.href };
+    }
     throw new Error(`模型请求了未开放的工具：${name || "（空名称）"}`);
   }
 
-  function createFolderDispatch(workspace, relativePath) {
+  function createFolderDispatch(workspace, relativePath, taskId, permissionToken) {
     if (typeof workspace !== "string" || !workspace) throw new TypeError("workspace must be a non-empty string");
     if (typeof relativePath !== "string" || !relativePath.trim() || encoder.encode(relativePath).length > 1024) {
       throw new TypeError("relativePath must be a non-empty path of at most 1024 bytes");
     }
-    return { command: "agent_create_folder", args: { workspace, relativePath } };
+    if (typeof taskId !== "string" || !taskId || encoder.encode(taskId).length > 128) throw new TypeError("taskId must be a non-empty string of at most 128 bytes");
+    if (typeof permissionToken !== "string" || !/^[0-9a-f]{64}$/.test(permissionToken)) throw new TypeError("permissionToken must be a 256-bit hex capability");
+    return { command: "agent_create_folder", args: { workspace, relativePath, taskId, permissionToken } };
   }
 
-  function editFileDispatch(workspace, action, approved = false) {
+  function editFileDispatch(workspace, action, approved = false, taskId, permissionToken) {
     if (typeof workspace !== "string" || !workspace) throw new TypeError("workspace must be a non-empty string");
     if (typeof approved !== "boolean") throw new TypeError("approved must be a boolean");
+    if (typeof taskId !== "string" || !taskId || encoder.encode(taskId).length > 128) throw new TypeError("taskId must be a non-empty string of at most 128 bytes");
+    if (typeof permissionToken !== "string" || !/^[0-9a-f]{64}$/.test(permissionToken)) throw new TypeError("permissionToken must be a 256-bit hex capability");
     const parsed = parseToolAction({
       type: "tool_call",
       name: "edit_file",
@@ -296,6 +327,8 @@
         oldText: parsed.old_text,
         newText: parsed.new_text,
         allowEdit: approved,
+        taskId,
+        permissionToken,
       },
     };
   }
@@ -310,6 +343,8 @@
     const tools = [];
     if (folderRequested && !folderDenied) tools.push("create_folder");
     if (editVerb && fileTarget && !editDenied) tools.push("edit_file");
+    if (/(?:搜索|搜一下|查一下|网上查|网页搜索|web search|search the web|look up online)/iu.test(text)) tools.push("web_search");
+    if (/(?:读取网页|抓取网页|打开这个网页|访问这个网址|web fetch|fetch this page)/iu.test(text)) tools.push("web_fetch");
     return tools;
   }
 
@@ -363,5 +398,5 @@
     return result;
   }
 
-  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
+  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, DEFAULT_ENABLED_TOOLS, READ_ONLY_TOOLS, normalizeEnabledTools, normalizeScope, enabledToolsForScope, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
 });

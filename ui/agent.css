@@ -66,3 +66,33 @@
 @media(max-width:800px){.agent-tool-settings>summary{padding-right:10px;padding-left:10px}.agent-tool-master-setting{padding-right:10px;font-size:9px}.agent-tool-settings-content{padding-right:10px;padding-left:10px}.agent-tool-switches{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .agent-execution-log>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:10px;font-weight:650}.agent-execution-log>summary::-webkit-details-marker{display:none}.agent-execution-log>summary::after{content:"⌄";float:right;color:var(--muted)}.agent-execution-log[open]>summary::after{content:"⌃"}.agent-execution-activity{display:grid;gap:7px}.agent-execution-activity .agent-entry{margin:0}
+
+
+/* Project context panel: plan, tool-recorded changes, and a browsable workspace tree. */
+.agent-layout{grid-template-columns:200px minmax(0,1fr) 238px}
+.agent-project-panel{display:grid;align-content:start;gap:8px;min-width:0;min-height:0;overflow:auto;padding:10px;border-left:1px solid var(--line);background:var(--surface-alt)}
+.agent-project-card{min-width:0;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
+.agent-project-card h2,.agent-project-card>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px;color:var(--ink);font-size:10px;font-weight:700;list-style:none}
+.agent-project-card>summary{cursor:pointer}
+.agent-project-card>summary::-webkit-details-marker{display:none}
+.agent-project-card>summary::after{content:"⌄";color:var(--muted)}
+.agent-project-card[open]>summary::after{content:"⌃"}
+.agent-project-card h2 span{display:grid;min-width:17px;height:17px;place-items:center;border-radius:20px;background:var(--line);color:var(--muted);font-size:9px}
+.agent-project-plan,.agent-project-files,.agent-file-tree{display:grid;align-content:start;gap:4px;margin:0;padding:0;list-style:none}
+.agent-project-plan{padding-left:18px;list-style:decimal;color:var(--ink)}
+.agent-project-plan li,.agent-project-files li{font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.agent-project-files li{padding:4px 5px;border-radius:5px;background:var(--surface-alt)}
+.agent-project-note,.agent-project-empty{margin:0;color:var(--muted);font-size:8px;line-height:1.5}
+.agent-project-note{margin:-3px 0 7px}
+.agent-tree-refresh{min-height:22px;padding:0 6px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--muted);cursor:pointer;font-size:8px}
+.agent-tree-refresh:hover{color:var(--ink);background:var(--surface-alt)}
+.agent-file-tree{max-height:260px;overflow:auto}
+.agent-tree-row{display:flex;align-items:center;gap:4px;min-width:0;padding:3px 2px;border-radius:4px;color:var(--ink);font-size:8px;line-height:1.35;overflow-wrap:anywhere}
+.agent-tree-row.directory{font-weight:650}
+.agent-tree-row .agent-tree-icon{flex:0 0 auto;color:var(--muted)}
+.agent-tree-row .agent-tree-path{min-width:0;overflow-wrap:anywhere}
+.agent-scope{max-width:140px}
+@media(max-width:1100px){.agent-layout{grid-template-columns:minmax(145px,185px) minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}.agent-taskbar{grid-row:1 / span 2}.agent-workbench{grid-row:1}.agent-project-panel{grid-column:2;grid-row:2;grid-template-columns:repeat(3,minmax(0,1fr));max-height:190px;border-top:1px solid var(--line);border-left:0}.agent-file-tree{max-height:96px}}
+@media(max-width:800px){.agent-layout{grid-template-columns:minmax(118px,145px) minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}.agent-taskbar{grid-row:1 / span 2}.agent-workbench{grid-row:1}.agent-project-panel{grid-column:2;grid-row:2;grid-template-columns:1fr;max-height:300px;padding:7px;border-top:1px solid var(--line)}.agent-file-tree{max-height:125px}.agent-project-card{padding:8px}}
+.agent-tree-row.directory,.agent-tree-parent{width:100%;border:0;background:transparent;text-align:left;cursor:pointer}.agent-tree-row.directory:hover,.agent-tree-parent:hover{background:var(--green-soft);color:var(--green-dark)}.agent-tree-card>.agent-tree-refresh{margin:-3px 0 6px}
+.agent-attachment-hint{margin-top:-4px;color:var(--muted);font-size:8px;line-height:1.4}.agent-composer.dragging{outline:2px dashed var(--green);outline-offset:2px;background:var(--green-soft)}

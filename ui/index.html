@@ -50,7 +50,7 @@
         <div class="page-intro overview-intro"><div><div class="eyebrow">DEVICE OVERVIEW</div><h1>本机概览</h1><p class="intro-copy">硬件与模型磁盘空间来自本机检测；未取得的数据会显示为未知。</p></div><button class="button secondary" id="refresh-hardware" type="button">重新检测硬件</button></div>
       <section class="quick-start-steps" aria-label="本地模型快速开始">
         <article class="quick-start-step" data-quick-step="hardware"><span class="quick-step-number">1</span><div><strong>检测硬件</strong><small id="quickstep-hardware-status">正在读取本机信息…</small></div><button class="text-button" id="quickstep-refresh-hardware" type="button">重新检测</button></article>
-        <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>安装推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><a class="text-button" id="quickstep-engine-action" href="#overview-engines">查看引擎管理</a></article>
+        <article class="quick-start-step" data-quick-step="engine"><span class="quick-step-number">2</span><div><strong>准备推理引擎</strong><small id="quickstep-engine-status">正在读取安装状态…</small></div><a class="text-button" id="quickstep-engine-action" href="#overview-engines">查看引擎管理</a></article>
         <article class="quick-start-step" data-quick-step="models"><span class="quick-step-number">3</span><div><strong>准备模型</strong><small id="quickstep-model-status">正在读取本地模型…</small></div><a class="text-button" href="#models">打开模型库</a></article>
       </section>
         <section class="overview-device-card card" aria-labelledby="overview-headline">
@@ -77,6 +77,7 @@
         </section>
         <div class="section-heading"><div><h2>本地引擎</h2><p>对话引擎与图像/视频共用引擎分别安装和管理。</p></div><a class="text-link" href="#run">打开运行管理 →</a></div>
         <section class="engine-grid" id="overview-engines"></section>
+        <div class="notice engine-reuse-callout"><strong>已有 llama-server？</strong><span>可在设置中选择现有可执行文件，避免重复安装。启动参数仍按 LocM 当前 CPU 配置，并以该文件的 --help 能力为准。</span><a class="button secondary" href="#settings">配置现有引擎</a></div>
         <div class="two-col overview-lower"><article class="card"><h2>本机资源</h2><p class="muted">最近采样；详情见“监测”。</p><div class="metric-line"><span>CPU</span><b id="overview-cpu">—</b><div class="meter"><i id="overview-cpu-bar"></i></div></div><div class="metric-line"><span>内存</span><b id="overview-ram">—</b><div class="meter blue-meter"><i id="overview-ram-bar"></i></div></div></article><article class="card"><h2>快速开始</h2><p>1. 安装 llama.cpp 对话引擎</p><p>2. 导入本地 GGUF 或从 Hugging Face 下载</p><p>3. 在“运行”启动模型，然后打开“对话”</p><a class="button primary" href="#models">管理模型</a></article></div>
       </section>
 
@@ -132,7 +133,7 @@
               <article class="resource-tile ram-plan"><div><strong>内存 · 模型映射</strong><span id="run-ram-value">—</span></div><div class="meter blue-meter"><i id="run-ram-bar"></i></div><small id="run-ram-note">读取模型大小与系统可用内存后估算；实际使用量会随上下文变化。</small></article>
               <article class="resource-tile disk-plan"><div><strong>硬盘 · 按需读取</strong><span id="run-disk-value">—</span></div><div class="meter"><i id="run-disk-bar"></i></div><small id="run-disk-note">模型文件保留在本机；内存不足时映射读取可能变慢。</small></article>
             </div>
-            <details class="run-advanced"><summary>高级：启动参数与版本能力</summary><p id="run-capability-summary" class="muted">正在检查已安装 llama-server 的 --help…</p><p id="run-effective-options" class="muted">启动时只传递当前版本在 --help 中确认支持的参数。</p><p class="muted">投机解码需要独立的草稿模型/解码配置；当前模型管理未接入草稿模型，因此不提供假开关。</p></details>
+            <details class="run-advanced"><summary>高级：启动参数与版本能力</summary><p id="run-capability-summary" class="muted">正在检查当前 llama-server 的 --help…</p><p id="run-effective-options" class="muted">启动时只传递当前版本在 --help 中确认支持的参数。</p><p class="muted">投机解码需要独立的草稿模型/解码配置；当前模型管理未接入草稿模型，因此不提供假开关。</p></details>
           </section>
           <section class="card run-options-card">
             <fieldset class="context-options"><legend>上下文长度 <span id="context-current-label">· 自动</span></legend><div class="context-choice-grid">
@@ -153,7 +154,7 @@
             <div id="run-status" class="muted small">模型未启动</div><div id="run-error" class="error-box" hidden></div>
           </section>
         </div>
-        <div class="notice"><strong>兼容提示</strong><span>运行页选项会在启动前与已安装 llama-server 的 --help 对照；不支持的项目会禁用或提示，不会传入虚构参数。</span></div>
+        <div class="notice"><strong>兼容提示</strong><span>运行页选项会在启动前与当前 llama-server 的 --help 对照；不支持的项目会禁用或提示，不会传入虚构参数。</span></div>
       </section>
 
       <section class="page chat-page" id="page-chat" data-title="对话">
@@ -197,7 +198,7 @@
             <button class="button secondary agent-new-task" id="agent-new-task" type="button">＋ 新任务</button>
             <div class="agent-list-heading">任务 <span id="agent-task-count">0</span></div>
             <div id="agent-task-list" class="agent-task-list" role="list"></div>
-            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>文件读写与文本搜索只限所选文件夹；搜索有数量和大小上限，不读取 .git 或跟随符号链接。覆盖、删除和命令会在操作预览后再弹出系统原生确认；命令仍以当前用户权限运行，可能影响工作区外内容。</span></div>
+            <div class="agent-sidebar-note"><strong>工作区保护</strong><span>列目录、搜索、读取和写入仅限所选文件夹，并须先经系统原生授权；只读授权不会改动文件。搜索有数量和大小上限，不读取 .git 或跟随符号链接。覆盖、删除和命令会在操作预览后再次弹出系统原生确认；命令仍以当前用户权限运行，可能影响工作区外内容。</span></div>
           </aside>
           <section class="agent-workbench" aria-label="Agent 工作区">
             <header class="agent-toolbar">
@@ -206,10 +207,10 @@
             </header>
             <div class="agent-tool-settings-row">
               <details id="agent-tool-settings" class="agent-tool-settings">
-                <summary><strong>工作区工具</strong><span id="agent-tool-count">8/8 已启用</span></summary>
-                <div class="agent-tool-settings-content"><small id="agent-tool-settings-note">可使用总开关全部启用或关闭，也可分别设置；设置保存在本机。关闭的工具不会提供给模型或执行。</small><div id="agent-tool-switches" class="agent-tool-switches"></div></div>
+                <summary><strong>工作区工具</strong><span id="agent-tool-count">8/10 已启用</span></summary>
+                <div class="agent-tool-settings-content"><small id="agent-tool-settings-note">联网工具默认关闭；启用后，搜索词和网页请求会发送给外部网站。关闭的工具不会提供给模型或执行。</small><div id="agent-tool-switches" class="agent-tool-switches"></div></div>
               </details>
-              <label class="agent-tool-master-setting" title="启用或关闭全部八个工作区工具"><span>全部启用</span><span class="agent-tool-switch"><input id="agent-tool-all" type="checkbox" checked aria-label="关闭全部八个工作区工具" aria-controls="agent-tool-switches" aria-checked="true"></span></label>
+              <label class="agent-tool-master-setting" title="启用或关闭全部十个 Agent 工具"><span>全部启用</span><span class="agent-tool-switch"><input id="agent-tool-all" type="checkbox" aria-label="启用全部十个 Agent 工具" aria-controls="agent-tool-switches" aria-checked="mixed"></span></label>
             </div>
             <details id="agent-improvement-panel" class="agent-improvement-panel">
               <summary>改进提案 <span id="agent-improvement-count">0 项 · 需人工审阅</span></summary>
@@ -263,17 +264,34 @@
               <div id="agent-attachments" class="agent-attachments" aria-live="polite"></div>
               <label class="sr-only" for="agent-input">描述要交给 Agent 的任务</label>
               <textarea id="agent-input" rows="2" maxlength="12000" placeholder="先在“运行”页面启动本地模型，并选择工作文件夹"></textarea>
+              <small id="agent-attachment-hint" class="agent-attachment-hint">可拖入或粘贴文本文件（总量 18 KB）；图片、PDF、Office 附件暂不支持。</small>
               <div class="agent-compose-footer">
                 <input id="agent-file-input" class="sr-only" type="file" multiple accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.log,.yaml,.yml,.toml,.xml,.html,.css,.js,.ts,.tsx,.jsx,.rs,.py,.go,.java,.c,.cpp,.h,.sql" />
                 <button class="agent-tool-button" id="agent-attach" type="button">⌁ 附件</button>
                 <label class="sr-only" for="agent-scope">工作区范围</label>
-                <select id="agent-scope" class="agent-scope" aria-label="工作区范围"><option value="workspace">仅限工作区</option></select>
+                <select id="agent-scope" class="agent-scope" aria-label="Agent 权限范围"><option value="workspace">仅限工作区</option><option value="read_only">仅限查看</option></select>
                 <button class="agent-tool-button agent-media-button" id="agent-media" type="button" title="跳转到画图页面；图像和视频生成功能尚未接入">画图 / 视频</button>
-                <span class="agent-safety-copy">命令、覆盖、删除会再经系统原生确认；命令仍可能影响工作区外内容</span>
+                <span class="agent-safety-copy">工作区写入、删除和命令会再经系统原生确认；联网工具仅在手动启用后使用</span>
                 <button class="button primary agent-send" id="agent-send" type="submit" aria-label="发送任务">↑</button>
               </div>
             </form>
           </section>
+          <aside class="agent-project-panel" aria-label="当前任务项目面板">
+            <section class="agent-project-card" aria-labelledby="agent-plan-heading">
+              <h2 id="agent-plan-heading">当前计划 <span id="agent-plan-count">0</span></h2>
+              <ol id="agent-plan-panel" class="agent-project-plan"><li class="agent-project-empty">提交任务后显示计划。</li></ol>
+            </section>
+            <section class="agent-project-card" aria-labelledby="agent-changes-heading">
+              <h2 id="agent-changes-heading">工具改动 <span id="agent-change-count">0</span></h2>
+              <p id="agent-change-note" class="agent-project-note">仅记录成功返回的 Agent 文件工具；命令可能改动的文件不在此清单中。</p>
+              <ul id="agent-changed-files" class="agent-project-files"><li class="agent-project-empty">尚无文件工具改动。</li></ul>
+            </section>
+            <details class="agent-project-card agent-tree-card" open>
+              <summary><strong>工作区文件</strong></summary>
+              <button id="agent-tree-refresh" class="agent-tree-refresh" type="button" aria-label="刷新工作区文件树">刷新</button>
+              <div id="agent-file-tree" class="agent-file-tree"><p class="agent-project-empty">选择工作区后可浏览文件。</p></div>
+            </details>
+          </aside>
         </div>
       </section>
 
@@ -414,12 +432,19 @@
       </section>
 
       <section class="page" id="page-settings" data-title="设置">
-        <div class="page-intro"><div><div class="eyebrow">PREFERENCES</div><h1>设置</h1><p class="intro-copy">配置模型和作品目录、界面外观与本地 API 端口。</p></div></div>
+        <div class="page-intro"><div><div class="eyebrow">PREFERENCES</div><h1>设置</h1><p class="intro-copy">配置模型和作品目录、界面外观、本地 API 端口与可选推理引擎。</p></div></div>
         <form id="settings-form" class="settings-stack">
           <article class="card"><h2>模型存放</h2><label for="settings-model-dir">模型目录</label><div class="input-with-button"><input id="settings-model-dir" autocomplete="off" /><button class="button secondary" type="button" id="choose-model-dir">选择目录</button></div><p class="muted tiny">新导入或下载的 GGUF 文件存放在这里；更改目录不会搬移已有模型。</p></article>
           <article class="card"><h2>作品保存位置</h2><label for="settings-creations-dir">图片 / 视频作品目录</label><div class="input-with-button"><input id="settings-creations-dir" autocomplete="off" placeholder="留空使用应用默认目录" /><button class="button secondary" type="button" id="choose-creations-dir">选择目录</button></div><p class="muted tiny">留空时使用应用默认作品目录；选择位置后，图片与视频分别保存在 images 和 videos 子目录。更改位置不会移动已有作品。</p></article>
           <article class="card"><h2>界面与服务</h2><label for="settings-language">界面语言</label><select id="settings-language"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select><p id="settings-language-note" class="muted tiny">英语目前覆盖导航、设置页和版本检查区；其他功能页可能仍显示中文。</p><label for="settings-appearance">外观</label><select id="settings-appearance"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select><label for="settings-port">本地 API 端口</label><input id="settings-port" type="number" min="1024" max="65535" /><p class="muted tiny">新配置默认 8666；运行页默认仅绑定 127.0.0.1。停止模型后更改端口并重新启动生效。</p></article>
           <article class="card app-update-card"><h2>应用更新</h2><p class="muted tiny">只查询本项目公开 GitHub Release 的版本与发行说明；不会自动下载或安装。</p><div class="settings-actions"><button class="button secondary" id="check-app-update" type="button">检查应用更新</button><span class="muted tiny" id="app-update-status" aria-live="polite">尚未检查</span></div><div id="app-update-details" class="app-update-details" hidden></div></article>
+          <article class="card external-engine-card">
+            <h2 id="external-engine-heading">复用已有 llama-server</h2>
+            <label id="settings-llama-server-path-label" for="settings-llama-server-path">llama-server 可执行文件</label>
+            <div class="input-with-button"><input id="settings-llama-server-path" autocomplete="off" placeholder="留空使用 LocM 管理的引擎" /><button class="button secondary" id="choose-llama-server-file" type="button">选择文件</button></div>
+            <div class="settings-actions"><button class="text-button" id="clear-llama-server-path" type="button">恢复 LocM 管理的引擎</button></div>
+            <p id="settings-llama-server-path-note" class="muted tiny">选择后优先使用该文件；LocM 会检查其 --help 并仅传入已确认支持的参数。LocM 不会下载或更新此文件。当前仍按 CPU 参数启动，不代表已启用 GPU 推理。清空路径后使用 LocM 引擎管理中的 llama.cpp。</p>
+          </article>
           <div class="settings-actions"><button class="button primary" type="submit">保存设置</button><span class="muted tiny" id="settings-status"></span></div>
         </form>
         <div class="notice"><strong>本地数据</strong><span>对话和模型保存在本机。Hugging Face 搜索/下载会连接其网站；本应用不会把聊天内容上传到该网站。</span></div>

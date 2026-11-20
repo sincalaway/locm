@@ -100,6 +100,8 @@ pub struct AppSettings {
     pub language: String,
     pub api_port: u16,
     #[serde(default)]
+    pub llama_server_path: Option<String>,
+    #[serde(default)]
     pub comfyui_directory: Option<String>,
     #[serde(default)]
     pub creations_directory: Option<String>,
@@ -114,6 +116,7 @@ impl Default for AppSettings {
             appearance: "system".to_string(),
             language: default_language(),
             api_port: 8666,
+            llama_server_path: None,
             comfyui_directory: None,
             creations_directory: None,
         }
@@ -318,6 +321,7 @@ pub fn save_settings(app: &AppHandle, settings: AppSettings) -> Result<AppSettin
         .map_err(|error| format!("无法确认模型目录：{error}"))?;
     let mut settings = settings;
     settings.model_directory = canonical.display().to_string();
+    settings.llama_server_path = normalize_llama_server_path(settings.llama_server_path)?;
     settings.creations_directory = match settings.creations_directory.take() {
         Some(directory) if !directory.trim().is_empty() => {
             let directory = PathBuf::from(directory.trim());
@@ -336,6 +340,45 @@ pub fn save_settings(app: &AppHandle, settings: AppSettings) -> Result<AppSettin
     let text = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
     fs::write(path, text).map_err(|error| format!("保存设置失败：{error}"))?;
     Ok(settings)
+}
+
+pub fn normalize_llama_server_path(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let path = PathBuf::from(value);
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("无法定位所选 llama-server：{error}"))?;
+    if !canonical.is_file() {
+        return Err("所选引擎不是普通文件".to_string());
+    }
+    let expected_name = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    if !canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(expected_name))
+    {
+        return Err(format!("请明确选择名为 {expected_name} 的可执行文件"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(&canonical)
+            .map_err(|error| format!("无法读取所选 llama-server 权限：{error}"))?;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err("所选 llama-server 没有可执行权限".to_string());
+        }
+    }
+    Ok(Some(canonical.display().to_string()))
 }
 
 pub fn models_directory(app: &AppHandle) -> Result<PathBuf, String> {
@@ -721,6 +764,17 @@ pub fn pick_model_file(app: &AppHandle) -> Result<Option<String>, String> {
         .map(|path| path.into_path().map(|path| path.display().to_string()))
         .transpose()
         .map_err(|error| format!("无法读取所选文件路径：{error}"))
+}
+
+pub fn pick_llama_server_file(app: &AppHandle) -> Result<Option<String>, String> {
+    let extensions: &[&str] = if cfg!(windows) { &["exe"] } else { &["*"] };
+    app.dialog()
+        .file()
+        .add_filter("llama-server", extensions)
+        .blocking_pick_file()
+        .map(|path| path.into_path().map(|path| path.display().to_string()))
+        .transpose()
+        .map_err(|error| format!("无法读取所选引擎路径：{error}"))
 }
 
 pub fn pick_directory(app: &AppHandle) -> Result<Option<String>, String> {
@@ -1493,6 +1547,7 @@ mod tests {
     fn new_settings_default_to_local_api_port_8666() {
         assert_eq!(AppSettings::default().api_port, 8666);
         assert_eq!(AppSettings::default().language, "zh-CN");
+        assert_eq!(AppSettings::default().llama_server_path, None);
     }
 
     #[test]
@@ -1516,6 +1571,49 @@ mod tests {
         .unwrap();
         assert_eq!(settings.creations_directory, None);
         assert_eq!(settings.language, "zh-CN");
+        assert_eq!(settings.llama_server_path, None);
+    }
+
+    #[test]
+    fn selected_llama_server_path_must_be_a_named_executable_file() {
+        let root = tempfile::tempdir().unwrap();
+        let executable_name = if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let executable = root.path().join(executable_name);
+        fs::write(&executable, b"fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(
+            normalize_llama_server_path(Some(executable.display().to_string())).unwrap(),
+            Some(executable.canonicalize().unwrap().display().to_string())
+        );
+        assert!(normalize_llama_server_path(Some(root.path().display().to_string())).is_err());
+        assert!(
+            normalize_llama_server_path(Some(root.path().join("other").display().to_string()))
+                .is_err()
+        );
+        assert_eq!(
+            normalize_llama_server_path(Some("  ".to_string())).unwrap(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_llama_server_path_requires_execute_permission() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("llama-server");
+        fs::write(&executable, b"fixture").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(normalize_llama_server_path(Some(executable.display().to_string())).is_err());
     }
     #[test]
     fn repository_and_file_validation_blocks_path_traversal() {

@@ -1,4 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#[path = "../agent_web.rs"]
+mod agent_web;
 #[path = "../agent_workspace.rs"]
 mod agent_workspace;
 #[path = "../desktop_backend.rs"]
@@ -149,6 +151,94 @@ struct RuntimeData {
 struct RuntimeState {
     inner: Mutex<RuntimeData>,
     shutting_down: AtomicBool,
+}
+
+#[derive(Clone, Default)]
+struct AgentScopeRegistry {
+    grants: Arc<Mutex<HashMap<String, AgentScopeGrant>>>,
+}
+
+#[derive(Clone)]
+struct AgentScopeGrant {
+    task_id: String,
+    workspace: String,
+    scope: AgentPermissionScope,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentPermissionScope {
+    ReadOnly,
+    Workspace,
+}
+
+impl AgentScopeRegistry {
+    fn scope_for(
+        &self,
+        token: &str,
+        task_id: &str,
+        workspace: &str,
+    ) -> Result<Option<AgentPermissionScope>, String> {
+        let grants = self
+            .grants
+            .lock()
+            .map_err(|_| "Agent 权限状态锁已损坏".to_string())?;
+        Ok(grants.get(token).and_then(|grant| {
+            (grant.task_id == task_id && grant.workspace == workspace).then_some(grant.scope)
+        }))
+    }
+
+    fn is_authorized(
+        &self,
+        token: &str,
+        task_id: &str,
+        workspace: &str,
+        required_scope: AgentPermissionScope,
+    ) -> Result<bool, String> {
+        let scope = self.scope_for(token, task_id, workspace)?;
+        Ok(matches!(scope, Some(AgentPermissionScope::Workspace))
+            || (required_scope == AgentPermissionScope::ReadOnly
+                && scope == Some(AgentPermissionScope::ReadOnly)))
+    }
+
+    fn grant(
+        &self,
+        task_id: String,
+        workspace: String,
+        scope: AgentPermissionScope,
+    ) -> Result<String, String> {
+        let mut random = [0u8; 32];
+        getrandom::getrandom(&mut random)
+            .map_err(|error| format!("无法生成 Agent 权限令牌：{error}"))?;
+        let mut token = String::with_capacity(64);
+        for byte in random {
+            token.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+            token.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+        }
+        let mut grants = self
+            .grants
+            .lock()
+            .map_err(|_| "Agent 权限状态锁已损坏".to_string())?;
+        if grants.len() >= 256 {
+            grants.clear();
+        }
+        grants.insert(
+            token.clone(),
+            AgentScopeGrant {
+                task_id,
+                workspace,
+                scope,
+            },
+        );
+        Ok(token)
+    }
+
+    fn revoke(&self, task_id: &str) -> Result<(), String> {
+        self.grants
+            .lock()
+            .map_err(|_| "Agent 权限状态锁已损坏".to_string())?
+            .retain(|_, grant| grant.task_id != task_id);
+        Ok(())
+    }
 }
 
 impl Default for RuntimeState {
@@ -360,7 +450,9 @@ fn agent_tool_definitions(enabled_tools: &[String]) -> serde_json::Value {
         { "type": "function", "function": { "name": "write_file", "description": "在所选工作区内新建文件；若目标已存在，应用会先向用户请求覆盖确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "edit_file", "description": "以唯一精确old_text/new_text片段修改所选工作区内的现有文件；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old_text": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["path", "old_text", "new_text"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "delete_file", "description": "删除所选工作区内的普通文件；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
-        { "type": "function", "function": { "name": "run_command", "description": "在所选工作区作为当前目录运行一个程序；必须提供程序名和argv参数，不使用shell；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "program": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } } }, "required": ["program", "args"], "additionalProperties": false } } }
+        { "type": "function", "function": { "name": "run_command", "description": "在所选工作区作为当前目录运行一个程序；必须提供程序名和argv参数，不使用shell；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "program": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } } }, "required": ["program", "args"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "web_search", "description": "使用 Bing RSS 搜索公开网页；搜索词会发送给外部搜索服务。", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "web_fetch", "description": "读取公开网页的 HTML、XML 或纯文本；只允许公网 HTTP(S)，有跳转、端口、超时和响应大小限制。", "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"], "additionalProperties": false } } }
     ]);
     serde_json::Value::Array(
         all.as_array()
@@ -388,8 +480,87 @@ fn agent_tool_fields(name: &str) -> Option<(&'static [&'static str], &'static [&
             &["path", "old_text", "new_text"],
         )),
         "run_command" => Some((&["program", "args"], &["program", "args"])),
+        "web_search" => Some((&["query"], &["query"])),
+        "web_fetch" => Some((&["url"], &["url"])),
         _ => None,
     }
+}
+
+fn agent_tools_for_scope(enabled_tools: &[String], scope: &str) -> Result<Vec<String>, String> {
+    match scope {
+        "workspace" => Ok(enabled_tools.to_vec()),
+        "read_only" => Ok(enabled_tools
+            .iter()
+            .filter(|name| {
+                matches!(
+                    name.as_str(),
+                    "list_files" | "search_files" | "read_file" | "web_search" | "web_fetch"
+                )
+            })
+            .cloned()
+            .collect()),
+        _ => Err("Agent 权限范围无效；只支持只读或仅限工作区".to_string()),
+    }
+}
+
+fn require_agent_scope(
+    permissions: &AgentScopeRegistry,
+    task_id: &str,
+    permission_token: &str,
+    workspace: &str,
+    required_scope: AgentPermissionScope,
+) -> Result<(), String> {
+    if task_id.is_empty() || task_id.len() > 128 || permission_token.len() != 64 {
+        return Err("Agent 任务标识无效".to_string());
+    }
+    let canonical_workspace = agent_workspace::canonicalize_workspace(workspace)?;
+    if permissions.is_authorized(
+        permission_token,
+        task_id,
+        &canonical_workspace,
+        required_scope,
+    )? {
+        Ok(())
+    } else {
+        Err(match required_scope {
+            AgentPermissionScope::ReadOnly => {
+                "当前任务没有经系统确认的该工作区读取权限，已拒绝列目录、搜索或读取文件".to_string()
+            }
+            AgentPermissionScope::Workspace => {
+                "当前任务没有经系统确认的该工作区读写权限，已拒绝文件或命令副作用".to_string()
+            }
+        })
+    }
+}
+
+fn require_agent_read_scope(
+    permissions: &AgentScopeRegistry,
+    task_id: &str,
+    permission_token: &str,
+    workspace: &str,
+) -> Result<(), String> {
+    require_agent_scope(
+        permissions,
+        task_id,
+        permission_token,
+        workspace,
+        AgentPermissionScope::ReadOnly,
+    )
+}
+
+fn require_agent_workspace_scope(
+    permissions: &AgentScopeRegistry,
+    task_id: &str,
+    permission_token: &str,
+    workspace: &str,
+) -> Result<(), String> {
+    require_agent_scope(
+        permissions,
+        task_id,
+        permission_token,
+        workspace,
+        AgentPermissionScope::Workspace,
+    )
 }
 
 fn normalize_agent_tool_call(
@@ -1352,6 +1523,19 @@ fn choose_directory(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn agent_choose_workspace(app: AppHandle) -> Result<Option<String>, String> {
+    match desktop_backend::pick_directory(&app)? {
+        Some(workspace) => agent_workspace::canonicalize_workspace(&workspace).map(Some),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn choose_llama_server_file(app: AppHandle) -> Result<Option<String>, String> {
+    desktop_backend::pick_llama_server_file(&app)
+}
+
+#[tauri::command]
 async fn scan_comfyui_models(
     directory: String,
 ) -> Result<desktop_backend::ComfyUiModelScan, String> {
@@ -1372,6 +1556,80 @@ fn confirm_agent_action(app: &AppHandle, title: &str, message: &str) -> bool {
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::YesNo)
         .blocking_show()
+}
+
+#[tauri::command]
+async fn agent_set_task_scope(
+    app: AppHandle,
+    task_id: String,
+    permission_token: Option<String>,
+    workspace: String,
+    scope: String,
+) -> Result<Option<String>, String> {
+    if task_id.trim().is_empty() || task_id.len() > 128 {
+        return Err("Agent 任务标识无效".to_string());
+    }
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        match scope.as_str() {
+            "read_only" => {
+                let canonical_workspace = agent_workspace::canonicalize_workspace(&workspace)?;
+                if let Some(token) = permission_token {
+                    match permissions.scope_for(&token, &task_id, &canonical_workspace)? {
+                        Some(AgentPermissionScope::ReadOnly) => return Ok(Some(token)),
+                        Some(AgentPermissionScope::Workspace) => {
+                            permissions.revoke(&task_id)?;
+                            return permissions
+                                .grant(task_id, canonical_workspace, AgentPermissionScope::ReadOnly)
+                                .map(Some);
+                        }
+                        None => {}
+                    }
+                }
+                permissions.revoke(&task_id)?;
+                let message = format!(
+                    "工作文件夹：{canonical_workspace}\n\n允许此 Agent 任务列出工作区内容、搜索并读取其中的文本文件。只读授权不会创建、修改或删除文件，也不会运行命令。选择“否”将拒绝工作区访问；任务会暂停且不会读取文件。"
+                );
+                if !confirm_agent_action(&app, "LocM Agent · 确认只读访问", &message) {
+                    return Ok(None);
+                }
+                permissions
+                    .grant(task_id, canonical_workspace, AgentPermissionScope::ReadOnly)
+                    .map(Some)
+            }
+            "workspace" => {
+                let canonical_workspace = agent_workspace::canonicalize_workspace(&workspace)?;
+                if let Some(token) = permission_token {
+                    if permissions.scope_for(&token, &task_id, &canonical_workspace)?
+                        == Some(AgentPermissionScope::Workspace)
+                    {
+                        return Ok(Some(token));
+                    }
+                }
+                permissions.revoke(&task_id)?;
+                let message = format!(
+                    "工作文件夹：{canonical_workspace}\n\n允许此 Agent 任务读取工作区内容，并在其中创建、写入或修改文件和文件夹；Agent 提出的删除文件或运行命令仍需单独审批。选择“否”将拒绝工作区访问，本轮会暂停且不会读取文件。若只想允许读取，请在权限菜单选择“只读”并单独确认。"
+                );
+                if !confirm_agent_action(&app, "LocM Agent · 确认工作区权限", &message) {
+                    return Ok(None);
+                }
+                permissions
+                    .grant(task_id, canonical_workspace, AgentPermissionScope::Workspace)
+                    .map(Some)
+            }
+            _ => Err("Agent 权限范围无效；只支持只读或仅限工作区".to_string()),
+        }
+    })
+    .await
+    .map_err(|error| format!("确认 Agent 权限失败：{error}"))?
+}
+
+#[tauri::command]
+fn agent_revoke_task_scope(app: AppHandle, task_id: String) -> Result<(), String> {
+    if task_id.trim().is_empty() || task_id.len() > 128 {
+        return Err("Agent 任务会话标识无效".to_string());
+    }
+    app.state::<AgentScopeRegistry>().revoke(&task_id)
 }
 
 fn agent_overwrite_confirmation_message(workspace: &str, path: &str, content: &str) -> String {
@@ -1441,7 +1699,8 @@ fn agent_command_confirmation_message(workspace: &str, program: &str, args: &[St
 mod agent_confirmation_tests {
     use super::{
         agent_command_confirmation_message, agent_edit_confirmation_message,
-        agent_overwrite_confirmation_message,
+        agent_overwrite_confirmation_message, agent_tools_for_scope, require_agent_read_scope,
+        require_agent_workspace_scope, AgentPermissionScope, AgentScopeRegistry,
     };
 
     #[test]
@@ -1481,23 +1740,133 @@ mod agent_confirmation_tests {
         assert!(message.contains("新片段 SHA-256："));
         assert!(message.contains("唯一一处旧文本精确替换"));
     }
-}
 
-#[tauri::command]
-async fn agent_workspace_path(workspace: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        agent_workspace::canonicalize_workspace(&workspace)
-    })
-    .await
-    .map_err(|error| format!("检查 Agent 工作文件夹失败：{error}"))?
+    #[test]
+    fn agent_read_only_scope_filters_every_side_effect_tool() {
+        let enabled = [
+            "list_files",
+            "search_files",
+            "read_file",
+            "create_folder",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "run_command",
+            "web_search",
+            "web_fetch",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        assert_eq!(
+            agent_tools_for_scope(&enabled, "read_only").unwrap(),
+            [
+                "list_files",
+                "search_files",
+                "read_file",
+                "web_search",
+                "web_fetch"
+            ]
+        );
+        assert_eq!(
+            agent_tools_for_scope(&enabled, "workspace").unwrap(),
+            enabled
+        );
+        assert!(agent_tools_for_scope(&enabled, "unrestricted").is_err());
+    }
+
+    #[test]
+    fn backend_workspace_grant_is_bound_to_task_and_canonical_workspace() {
+        let registry = AgentScopeRegistry::default();
+        let token = registry
+            .grant(
+                "task-a".to_string(),
+                "/work/a".to_string(),
+                AgentPermissionScope::Workspace,
+            )
+            .unwrap();
+        assert!(registry
+            .is_authorized(&token, "task-a", "/work/a", AgentPermissionScope::ReadOnly)
+            .unwrap());
+        assert!(registry
+            .is_authorized(&token, "task-a", "/work/a", AgentPermissionScope::Workspace)
+            .unwrap());
+        assert!(!registry
+            .is_authorized(&token, "task-a", "/work/b", AgentPermissionScope::ReadOnly)
+            .unwrap());
+        assert!(!registry
+            .is_authorized(&token, "task-b", "/work/a", AgentPermissionScope::ReadOnly)
+            .unwrap());
+        assert!(!registry
+            .is_authorized("", "task-a", "/work/a", AgentPermissionScope::ReadOnly)
+            .unwrap());
+        registry.revoke("task-a").unwrap();
+        assert!(!registry
+            .is_authorized(&token, "task-a", "/work/a", AgentPermissionScope::ReadOnly)
+            .unwrap());
+    }
+
+    #[test]
+    fn workspace_side_effect_gate_requires_the_matching_backend_grant() {
+        let root = tempfile::tempdir().unwrap();
+        let other = root.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let workspace = root.path().to_string_lossy().into_owned();
+        let other_workspace = other.to_string_lossy().into_owned();
+        let registry = AgentScopeRegistry::default();
+
+        assert!(require_agent_workspace_scope(&registry, "task-a", "", &workspace).is_err());
+        let canonical = super::agent_workspace::canonicalize_workspace(&workspace).unwrap();
+        let token = registry
+            .grant(
+                "task-a".to_string(),
+                canonical,
+                AgentPermissionScope::Workspace,
+            )
+            .unwrap();
+        assert!(require_agent_read_scope(&registry, "task-a", &token, &workspace).is_ok());
+        assert!(require_agent_workspace_scope(&registry, "task-a", &token, &workspace).is_ok());
+        assert!(
+            require_agent_workspace_scope(&registry, "task-a", &token, &other_workspace).is_err()
+        );
+        assert!(require_agent_workspace_scope(&registry, "task-b", &token, &workspace).is_err());
+    }
+
+    #[test]
+    fn read_only_grant_allows_reads_but_never_workspace_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let other = root.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let workspace = root.path().to_string_lossy().into_owned();
+        let other_workspace = other.to_string_lossy().into_owned();
+        let registry = AgentScopeRegistry::default();
+        let canonical = super::agent_workspace::canonicalize_workspace(&workspace).unwrap();
+        let token = registry
+            .grant(
+                "task-a".to_string(),
+                canonical,
+                AgentPermissionScope::ReadOnly,
+            )
+            .unwrap();
+
+        assert!(require_agent_read_scope(&registry, "task-a", &token, &workspace).is_ok());
+        assert!(require_agent_workspace_scope(&registry, "task-a", &token, &workspace).is_err());
+        assert!(require_agent_read_scope(&registry, "task-b", &token, &workspace).is_err());
+        assert!(require_agent_read_scope(&registry, "task-a", &token, &other_workspace).is_err());
+    }
 }
 
 #[tauri::command]
 async fn agent_list_files(
+    app: AppHandle,
     workspace: String,
     relative_path: String,
+    task_id: String,
+    permission_token: String,
 ) -> Result<Vec<agent_workspace::WorkspaceFile>, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_read_scope(&permissions, &task_id, &permission_token, &workspace)?;
         agent_workspace::list_files(&workspace, &relative_path)
     })
     .await
@@ -1506,12 +1875,17 @@ async fn agent_list_files(
 
 #[tauri::command]
 async fn agent_search_files(
+    app: AppHandle,
     workspace: String,
     relative_path: String,
     query: String,
     case_sensitive: bool,
+    task_id: String,
+    permission_token: String,
 ) -> Result<agent_workspace::SearchOutcome, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_read_scope(&permissions, &task_id, &permission_token, &workspace)?;
         agent_workspace::search_files(&workspace, &relative_path, &query, case_sensitive)
     })
     .await
@@ -1519,8 +1893,16 @@ async fn agent_search_files(
 }
 
 #[tauri::command]
-async fn agent_read_file(workspace: String, relative_path: String) -> Result<String, String> {
+async fn agent_read_file(
+    app: AppHandle,
+    workspace: String,
+    relative_path: String,
+    task_id: String,
+    permission_token: String,
+) -> Result<String, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_read_scope(&permissions, &task_id, &permission_token, &workspace)?;
         agent_workspace::read_file(&workspace, &relative_path)
     })
     .await
@@ -1529,10 +1911,15 @@ async fn agent_read_file(workspace: String, relative_path: String) -> Result<Str
 
 #[tauri::command]
 async fn agent_create_folder(
+    app: AppHandle,
     workspace: String,
     relative_path: String,
+    task_id: String,
+    permission_token: String,
 ) -> Result<agent_workspace::CreateFolderOutcome, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_workspace_scope(&permissions, &task_id, &permission_token, &workspace)?;
         agent_workspace::create_folder(&workspace, &relative_path)
     })
     .await
@@ -1546,8 +1933,12 @@ async fn agent_write_file(
     relative_path: String,
     content: String,
     allow_overwrite: bool,
+    task_id: String,
+    permission_token: String,
 ) -> Result<agent_workspace::WriteOutcome, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_workspace_scope(&permissions, &task_id, &permission_token, &workspace)?;
         if allow_overwrite
             && !confirm_agent_action(
                 &app,
@@ -1575,8 +1966,12 @@ async fn agent_edit_file(
     old_text: String,
     new_text: String,
     allow_edit: bool,
+    task_id: String,
+    permission_token: String,
 ) -> Result<agent_workspace::EditFileOutcome, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_workspace_scope(&permissions, &task_id, &permission_token, &workspace)?;
         if allow_edit {
             let preview = agent_workspace::edit_file(
                 &workspace,
@@ -1612,8 +2007,12 @@ async fn agent_delete_file(
     app: AppHandle,
     workspace: String,
     relative_path: String,
+    task_id: String,
+    permission_token: String,
 ) -> Result<bool, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_workspace_scope(&permissions, &task_id, &permission_token, &workspace)?;
         let message = format!(
             "工作文件夹：{workspace}\n将删除普通文件：{relative_path}\n\n此操作不可撤销。只有在路径与文件均正确时才选择“是”。"
         );
@@ -1633,8 +2032,12 @@ async fn agent_run_command(
     workspace: String,
     program: String,
     args: Vec<String>,
+    task_id: String,
+    permission_token: String,
 ) -> Result<agent_workspace::CommandOutput, String> {
+    let permissions = app.state::<AgentScopeRegistry>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        require_agent_workspace_scope(&permissions, &task_id, &permission_token, &workspace)?;
         let message = agent_command_confirmation_message(&workspace, &program, &args);
         if !confirm_agent_action(&app, "LocM Agent · 确认运行命令", &message) {
             return Ok(agent_workspace::CommandOutput {
@@ -1650,6 +2053,19 @@ async fn agent_run_command(
     })
     .await
     .map_err(|error| format!("Agent 命令执行失败：{error}"))?
+}
+
+#[tauri::command]
+async fn agent_web_search(query: String) -> Result<Vec<agent_web::SearchResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_web::web_search(&query))
+        .await
+        .map_err(|error| format!("Agent 网页搜索任务失败：{error}"))?
+}
+#[tauri::command]
+async fn agent_web_fetch(url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || agent_web::web_fetch(&url))
+        .await
+        .map_err(|error| format!("Agent 网页读取任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -1892,10 +2308,11 @@ fn cancel_huggingface_download(
 }
 
 #[tauri::command]
-async fn server_capabilities() -> Result<ServerCapabilities, String> {
+async fn server_capabilities(app: AppHandle) -> Result<ServerCapabilities, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let settings = desktop_backend::load_settings(&app)?;
         let statuses = engine_manager::desktop_statuses().map_err(|error| error.to_string())?;
-        let executable = locate_llama_server(&statuses)?;
+        let executable = locate_llama_server(&statuses, settings.llama_server_path.as_deref())?;
         probe_capabilities(&executable)
     })
     .await
@@ -2056,7 +2473,7 @@ async fn start_local_model(
             })?;
         drop(port_probe);
         let statuses = engine_manager::desktop_statuses().map_err(|error| error.to_string())?;
-        let executable = locate_llama_server(&statuses)?;
+        let executable = locate_llama_server(&statuses, settings.llama_server_path.as_deref())?;
         let capabilities = probe_capabilities(&executable)?;
         let args = build_server_args(
             Path::new(&model.path),
@@ -2213,8 +2630,10 @@ async fn chat_complete(
     temperature: f32,
     max_tokens: u32,
     agent_enabled_tools: Vec<String>,
+    agent_scope: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let agent_enabled_tools = agent_tools_for_scope(&agent_enabled_tools, &agent_scope)?;
         if !(1..=4096).contains(&max_tokens) {
             return Err("模型回复上限无效；必须在 1 至 4096 之间".to_string());
         }
@@ -2533,7 +2952,17 @@ fn notify_scheduled_task(
     schedule_backend::send_task_notification(&channels, title, status, summary)
 }
 
-fn locate_llama_server(statuses: &[engine_manager::EngineStatus]) -> Result<PathBuf, String> {
+fn locate_llama_server(
+    statuses: &[engine_manager::EngineStatus],
+    selected_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = selected_path {
+        if !path.trim().is_empty() {
+            return desktop_backend::normalize_llama_server_path(Some(path.to_string()))?
+                .map(PathBuf::from)
+                .ok_or_else(|| "所选 llama-server 路径为空".to_string());
+        }
+    }
     let chat = statuses
         .iter()
         .find(|status| status.engine == "llama.cpp")
@@ -2600,6 +3029,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(RuntimeState::default())
+        .manage(AgentScopeRegistry::default())
         .manage(ModelDownloadState::default())
         .manage(MediaGenerationState::default())
         .manage(schedule_backend::PushChannelState::default())
@@ -2618,18 +3048,23 @@ fn main() {
             open_model_location,
             remove_model,
             choose_model_file,
+            choose_llama_server_file,
             choose_directory,
+            agent_choose_workspace,
             scan_comfyui_models,
             open_creations_directory,
-            agent_workspace_path,
             agent_list_files,
             agent_search_files,
             agent_read_file,
+            agent_set_task_scope,
+            agent_revoke_task_scope,
             agent_create_folder,
             agent_edit_file,
             agent_write_file,
             agent_delete_file,
             agent_run_command,
+            agent_web_search,
+            agent_web_fetch,
             import_model,
             search_huggingface,
             huggingface_files,

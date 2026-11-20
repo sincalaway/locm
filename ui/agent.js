@@ -4,10 +4,14 @@
   const Protocol = window.LocmAgentProtocol;
   const WorkspaceState = window.LocmAgentWorkspace;
   const History = window.LocmAgentHistory;
+  const Proposals = window.LocmAgentProposals;
+  const Benchmark = window.LocmAgentBenchmark;
   const TASKS_KEY = "locm-agent-tasks-v1";
   const WORKSPACE_KEY = "locm-agent-workspace-v1";
   const CURRENT_TASK_KEY = "locm-agent-current-task-v1";
   const TOOLS_KEY = "locm-agent-enabled-tools-v1";
+  const PROPOSALS_KEY = "locm-agent-improvement-proposals-v1";
+  const BENCHMARK_KEY = "locm-agent-protocol-safety-benchmark-v1";
   const CONTINUATION_RULE = "只有真实用户发起的新任务或明确追加要求时才需要生成计划。以“【LocM 应用内部继续指令；不是用户新请求】”开头，或以“【LocM 应用内部工作区工具结果；不是用户新请求】”开头的消息，以及旧记录中以“工作区工具结果：”开头的消息，都是应用内部上下文，不是用户请求。计划一旦展示，收到这些内部消息后禁止重复或重写计划；应按已展示计划直接返回下一步工具调用、进度消息或完成总结。";
   const MAX_TASKS = 40;
   const MAX_TURNS = 50;
@@ -38,6 +42,8 @@
     tasks: loadTasks(),
     workspace: loadWorkspace(),
     enabledTools: loadEnabledTools(),
+    proposals: loadProposals(),
+    latestBenchmark: loadLatestBenchmark(),
     currentTaskId: loadCurrentTaskId(),
     runtime: { running: false, modelName: null },
     attachments: [],
@@ -66,6 +72,56 @@
       const stored = localStorage.getItem(TOOLS_KEY);
       return Protocol.normalizeEnabledTools(stored === null ? null : JSON.parse(stored));
     } catch { return Protocol.normalizeEnabledTools(null); }
+  }
+  function loadProposals() {
+    try { return Proposals.loadProposals(localStorage.getItem(PROPOSALS_KEY) || ""); }
+    catch { return []; }
+  }
+  function loadLatestBenchmark() {
+    try {
+      const value = JSON.parse(localStorage.getItem(BENCHMARK_KEY) || "null");
+      if (!value || value.suiteId !== Benchmark.SUITE_ID || value.suiteVersion !== Benchmark.SUITE_VERSION
+        || !Number.isInteger(value.total) || !Number.isInteger(value.passed) || !Number.isInteger(value.failed)
+        || value.passed + value.failed !== value.total || !Array.isArray(value.results)) return null;
+      const results = value.results.slice(0, 20);
+      if (results.length !== value.total || results.some((item) => !item || typeof item.id !== "string"
+        || typeof item.passed !== "boolean" || !["protocol", "safety"].includes(item.category))) return null;
+      const passed = results.filter((item) => item.passed).length;
+      if (passed !== value.passed || results.length - passed !== value.failed) return null;
+      const safetyResults = results.filter((item) => item.category === "safety");
+      return {
+        suiteId: Benchmark.SUITE_ID,
+        suiteVersion: Benchmark.SUITE_VERSION,
+        total: results.length,
+        passed,
+        failed: results.length - passed,
+        passRate: passed / results.length,
+        safetyChecks: safetyResults.length,
+        safetyChecksFailed: safetyResults.filter((item) => !item.passed).length,
+        modelTested: false,
+        scope: "协议与执行状态代码回归；未启动模型、未调用工作区工具、未验证 Windows GUI",
+        ranAt: Number.isFinite(value.ranAt) ? value.ranAt : null,
+        results: results.map((item) => ({
+          id: item.id.slice(0, 100),
+          category: item.category,
+          passed: item.passed,
+          detail: String(item.detail || "").slice(0, 1000),
+        })),
+      };
+    } catch { return null; }
+  }
+  function persistProposals() {
+    try {
+      localStorage.setItem(PROPOSALS_KEY, Proposals.serializeProposals(state.proposals));
+      return true;
+    } catch {
+      notify("改进提案无法保存到本机存储。", true);
+      return false;
+    }
+  }
+  function persistLatestBenchmark() {
+    try { localStorage.setItem(BENCHMARK_KEY, JSON.stringify(state.latestBenchmark)); return true; }
+    catch { notify("基准结果无法保存到本机存储。", true); return false; }
   }
   function saveEnabledTools() {
     try { localStorage.setItem(TOOLS_KEY, JSON.stringify(state.enabledTools)); return true; }
@@ -276,6 +332,144 @@
       input.disabled = locked;
       input.setAttribute("aria-checked", String(input.checked));
     });
+  }
+
+  function proposalCategoryLabel(category) {
+    return ({ prompt: "提示词建议", tool_routing: "工具路由建议", safety_policy: "安全策略建议", other: "其他" })[category] || "其他";
+  }
+  function proposalStatusLabel(status) {
+    return ({ pending_review: "待审阅", approved_for_implementation: "已批准供开发实现", rejected: "已拒绝" })[status] || "未知状态";
+  }
+  function renderImprovements() {
+    const count = $("#agent-improvement-count");
+    const benchmarkLabel = $("#agent-benchmark-result");
+    const submit = $("#agent-proposal-submit");
+    const list = $("#agent-proposal-list");
+    const pendingCount = state.proposals.filter((proposal) => proposal.status === "pending_review").length;
+    count.textContent = `${pendingCount} 项待审阅 · 共 ${state.proposals.length} 项`;
+    const benchmark = state.latestBenchmark;
+    if (!benchmark) {
+      benchmarkLabel.textContent = "尚未运行固定回归用例。";
+      submit.disabled = true;
+    } else {
+      const when = Number.isFinite(benchmark.ranAt) ? ` · ${new Date(benchmark.ranAt).toLocaleString()}` : "";
+      benchmarkLabel.textContent = `${benchmark.passed}/${benchmark.total} 项通过（${Math.round(benchmark.passRate * 100)}%）；安全检查失败 ${benchmark.safetyChecksFailed || 0}${when}。${benchmark.failed ? "存在失败，不能批准提案。" : "代码协议基准，不是模型测试。"}`;
+      submit.disabled = false;
+    }
+    list.replaceChildren();
+    if (!state.proposals.length) {
+      const empty = document.createElement("p");
+      empty.className = "agent-proposal-empty";
+      empty.textContent = "还没有改进提案。";
+      list.append(empty);
+      return;
+    }
+    state.proposals.forEach((proposal) => {
+      const card = document.createElement("article");
+      card.className = "agent-proposal-card";
+      const heading = document.createElement("div");
+      heading.className = "agent-proposal-heading";
+      const title = document.createElement("strong");
+      title.textContent = proposalCategoryLabel(proposal.category);
+      const status = document.createElement("span");
+      status.className = "agent-proposal-status";
+      status.textContent = proposalStatusLabel(proposal.status);
+      heading.append(title, status);
+      const observation = document.createElement("p");
+      observation.textContent = `观察：${proposal.observedBehavior}`;
+      const rationale = document.createElement("p");
+      rationale.textContent = `理由：${proposal.rationale}`;
+      const benchmarkNote = document.createElement("p");
+      benchmarkNote.textContent = `记录时的当前代码基线：${proposal.benchmark.passed}/${proposal.benchmark.total} 通过；没有评测此候选改动。`;
+      const candidate = document.createElement("pre");
+      candidate.textContent = proposal.proposedChange;
+      card.append(heading, observation, rationale, candidate, benchmarkNote);
+      if (proposal.taskTitle) {
+        const task = document.createElement("p");
+        task.textContent = `关联任务：${proposal.taskTitle}`;
+        card.append(task);
+      }
+      if (proposal.status === "pending_review") {
+        const actions = document.createElement("div");
+        actions.className = "agent-proposal-actions";
+        const reject = document.createElement("button");
+        reject.type = "button";
+        reject.className = "button secondary";
+        reject.textContent = "拒绝";
+        reject.addEventListener("click", () => reviewImprovementProposal(proposal.id, "reject"));
+        const approve = document.createElement("button");
+        approve.type = "button";
+        approve.className = "button primary";
+        approve.textContent = "批准供开发实现";
+        approve.disabled = proposal.benchmark.failed !== 0;
+        approve.title = approve.disabled ? "当前基准有失败；修复并重新记录通过的回归结果后再批准" : "只批准后续开发审阅，不会自动应用提案";
+        approve.addEventListener("click", () => reviewImprovementProposal(proposal.id, "approve"));
+        actions.append(reject, approve);
+        card.append(actions);
+      }
+      list.append(card);
+    });
+  }
+  function reviewImprovementProposal(id, decision) {
+    const next = Proposals.reviewProposal(state.proposals, id, decision, Date.now());
+    if (!next) {
+      notify("该提案不可审阅；待基准全部通过后才能批准。", true);
+      return;
+    }
+    const previous = state.proposals;
+    state.proposals = next;
+    if (!persistProposals()) {
+      state.proposals = previous;
+      renderImprovements();
+      return;
+    }
+    renderImprovements();
+    notify(decision === "approve" ? "提案已批准供开发实现；运行配置和程序均未更改。" : "提案已拒绝；运行配置和程序均未更改。");
+  }
+  function runImprovementBenchmark() {
+    try {
+      const previous = state.latestBenchmark;
+      state.latestBenchmark = Benchmark.runSuite(Date.now());
+      if (!persistLatestBenchmark()) {
+        state.latestBenchmark = previous;
+        renderImprovements();
+        return;
+      }
+      renderImprovements();
+      if (state.latestBenchmark?.failed) notify(`协议/安全基准 ${state.latestBenchmark.passed}/${state.latestBenchmark.total} 通过；存在失败，提案不可批准。`, true);
+      else notify(`协议/安全代码基准全部通过（${state.latestBenchmark.passed}/${state.latestBenchmark.total}）；未运行模型或工作区工具。`);
+    } catch (error) {
+      notify(`无法运行离线协议基准：${error}`, true);
+    }
+  }
+  function submitImprovementProposal(event) {
+    event.preventDefault();
+    if (!state.latestBenchmark) {
+      notify("请先运行固定协议/安全基准，再记录提案。", true);
+      return;
+    }
+    try {
+      const task = activeTask();
+      const proposal = Proposals.createProposal({
+        category: $("#agent-proposal-category").value,
+        observedBehavior: $("#agent-proposal-observation").value,
+        proposedChange: $("#agent-proposal-change").value,
+        rationale: $("#agent-proposal-rationale").value,
+        taskId: task?.id || null,
+        taskTitle: task?.title || null,
+        benchmark: state.latestBenchmark,
+      }, Date.now());
+      const previous = state.proposals;
+      state.proposals = Proposals.addProposal(state.proposals, proposal);
+      if (!persistProposals()) state.proposals = previous;
+      else {
+        $("#agent-proposal-form").reset();
+        notify("提案已记录为待审阅；它不会影响当前 Agent 行为。");
+      }
+      renderImprovements();
+    } catch (error) {
+      notify(`无法记录改进提案：${error}`, true);
+    }
   }
 
   function renderTaskList() {
@@ -513,6 +707,7 @@
     renderTaskList();
     renderToolbar();
     renderToolSettings();
+    renderImprovements();
     renderTranscript();
     renderAttachments();
     updateComposerState();
@@ -1403,6 +1598,8 @@
     });
     $("#agent-new-task").addEventListener("click", newTask);
     $("#agent-choose-workspace").addEventListener("click", chooseWorkspace);
+    $("#agent-run-benchmark").addEventListener("click", runImprovementBenchmark);
+    $("#agent-proposal-form").addEventListener("submit", submitImprovementProposal);
     $("#agent-model-button").addEventListener("click", () => { location.hash = "#run"; });
     $("#agent-attach").addEventListener("click", () => $("#agent-file-input").click());
     $("#agent-file-input").addEventListener("change", async (event) => {

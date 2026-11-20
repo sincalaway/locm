@@ -35,5 +35,6 @@ test("does not turn negative, informational, pathless, or attached-file requests
   assert.equal(createFolderRequest("我不想创建ewoe文件夹"), null);
   assert.equal(createFolderRequest("怎么创建ewoe文件夹？"), null);
   assert.equal(createFolderRequest("帮我创建一个文件夹"), null);
+  assert.equal(createFolderRequest("在 qw4 文件夹内创建一个一键清理电脑缓存的命令"), null);
   assert.equal(createFolderRequest("帮我创建一个ewoe文件夹", true), null);
 });

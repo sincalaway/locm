@@ -1,0 +1,28 @@
+.agent-improvement-panel{border-bottom:1px solid var(--line);background:var(--surface)}
+.agent-improvement-panel>summary{display:flex;align-items:center;gap:8px;padding:8px 14px;color:var(--ink);cursor:pointer;list-style:none;font-size:10px;font-weight:650}
+.agent-improvement-panel>summary::-webkit-details-marker{display:none}
+.agent-improvement-panel>summary::after{content:"⌄";margin-left:auto;color:var(--muted)}
+.agent-improvement-panel[open]>summary::after{content:"⌃"}
+.agent-improvement-panel>summary span{color:var(--muted);font-size:9px;font-weight:500}
+.agent-improvement-content{display:grid;gap:10px;padding:0 14px 12px}
+.agent-improvement-note,.agent-benchmark-note{margin:0;color:var(--muted);font-size:9px;line-height:1.5}
+.agent-benchmark-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--surface-alt)}
+.agent-benchmark-row .button{min-height:29px;font-size:9px}
+.agent-benchmark-result{color:var(--muted);font-size:9px;line-height:1.5}
+.agent-improvement-form{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr);gap:7px}
+.agent-improvement-form label{display:grid;gap:4px;color:var(--muted);font-size:9px}
+.agent-improvement-form label:nth-child(2),.agent-improvement-form label:nth-child(3),.agent-improvement-form label:nth-child(4){grid-column:1/-1}
+.agent-improvement-form input,.agent-improvement-form select,.agent-improvement-form textarea{width:100%;min-width:0;padding:7px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--ink);font:inherit;font-size:10px;line-height:1.5}
+.agent-improvement-form textarea{min-height:56px;resize:vertical}
+.agent-improvement-form .button{justify-self:start;min-height:30px;font-size:9px}
+.agent-proposal-list{display:grid;gap:7px;max-height:260px;overflow:auto}
+.agent-proposal-empty{margin:0;padding:8px;color:var(--muted);font-size:9px}
+.agent-proposal-card{display:grid;gap:6px;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.agent-proposal-heading{display:flex;justify-content:space-between;gap:8px;align-items:start}
+.agent-proposal-heading strong{font-size:10px;overflow-wrap:anywhere}
+.agent-proposal-status{flex:0 0 auto;padding:2px 6px;border-radius:10px;background:var(--surface-alt);color:var(--muted);font-size:8px}
+.agent-proposal-card p{margin:0;color:var(--muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.agent-proposal-card pre{max-height:130px;overflow:auto;margin:0;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--surface-alt);font:9px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.agent-proposal-actions{display:flex;justify-content:flex-end;gap:6px}
+.agent-proposal-actions .button{min-height:27px;padding:0 9px;font-size:9px}
+@media(max-width:800px){.agent-improvement-panel>summary{padding-right:10px;padding-left:10px}.agent-improvement-content{padding-right:10px;padding-left:10px}.agent-improvement-form{grid-template-columns:minmax(0,1fr)}.agent-improvement-form label{grid-column:1/-1}}

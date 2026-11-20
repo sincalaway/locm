@@ -7,6 +7,7 @@
   <title>本地 AI 工作台</title>
   <link rel="stylesheet" href="./app.css" />
   <link rel="stylesheet" href="./agent.css" />
+  <link rel="stylesheet" href="./agent_improvements.css" />
   <link rel="stylesheet" href="./workbench-theme.css" />
   <link rel="stylesheet" href="./responsive.css" />
   <script src="./app_version.js" defer></script>
@@ -17,6 +18,8 @@
   <script src="./agent_protocol.js" defer></script>
   <script src="./agent_workspace_state.js" defer></script>
   <script src="./agent_history.js" defer></script>
+  <script src="./agent_proposals.js" defer></script>
+  <script src="./agent_benchmark.js" defer></script>
   <script src="./agent.js" defer></script>
 </head>
 <body data-page="overview">
@@ -208,6 +211,38 @@
               </details>
               <label class="agent-tool-master-setting" title="启用或关闭全部八个工作区工具"><span>全部启用</span><span class="agent-tool-switch"><input id="agent-tool-all" type="checkbox" checked aria-label="关闭全部八个工作区工具" aria-controls="agent-tool-switches" aria-checked="true"></span></label>
             </div>
+            <details id="agent-improvement-panel" class="agent-improvement-panel">
+              <summary>改进提案 <span id="agent-improvement-count">0 项 · 需人工审阅</span></summary>
+              <div class="agent-improvement-content">
+                <p class="agent-improvement-note">提案仅保存在本机。批准只表示可供后续开发实施，不会应用到提示词、工具权限、工具清单或程序文件；任何实际变更仍需另行审阅和批准。</p>
+                <div class="agent-benchmark-row">
+                  <button class="button secondary" id="agent-run-benchmark" type="button">运行协议 / 安全基准</button>
+                  <span class="agent-benchmark-result" id="agent-benchmark-result" aria-live="polite">尚未运行固定回归用例。</span>
+                </div>
+                <p class="agent-benchmark-note">基准只检查协议解析和执行状态代码，不启动本地模型、不调用工作区工具，也不验证 Windows GUI。保存的分数是记录时的当前代码基线，不是候选改动的测试；它不能证明模型能力或 Windows 端到端行为。</p>
+                <form id="agent-proposal-form" class="agent-improvement-form">
+                  <label>提案类别
+                    <select id="agent-proposal-category" required>
+                      <option value="prompt">提示词建议</option>
+                      <option value="tool_routing">工具路由建议</option>
+                      <option value="safety_policy">安全策略建议</option>
+                      <option value="other">其他</option>
+                    </select>
+                  </label>
+                  <label>观察到的问题 / 证据
+                    <textarea id="agent-proposal-observation" maxlength="4000" required placeholder="描述失败表现、任务或执行步骤；不要粘贴密钥或凭据。"></textarea>
+                  </label>
+                  <label>候选改动（写出精确建议或 diff）
+                    <textarea id="agent-proposal-change" maxlength="8000" required placeholder="记录拟改内容；此处不会直接改动运行配置或程序。"></textarea>
+                  </label>
+                  <label>理由与预期结果
+                    <textarea id="agent-proposal-rationale" maxlength="4000" required placeholder="说明为什么改、如何评测以及需要留意的回归。"></textarea>
+                  </label>
+                  <button class="button secondary" id="agent-proposal-submit" type="submit" disabled>记录待审阅提案</button>
+                </form>
+                <div id="agent-proposal-list" class="agent-proposal-list" aria-live="polite"><p class="agent-proposal-empty">还没有改进提案。</p></div>
+              </div>
+            </details>
             <div class="agent-stage">
               <div id="agent-welcome" class="agent-welcome">
                 <div class="agent-welcome-mark">▣</div>

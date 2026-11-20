@@ -5,7 +5,7 @@
 })(globalThis, function () {
   const CONTINUATION_PREFIX = "【LocM 应用内部继续指令；不是用户新请求】";
   const TOOL_RESULT_PREFIX = "【LocM 应用内部工作区工具结果；不是用户新请求】";
-  const TOOL_ROUTING_GUIDANCE = "工具意图路由：用户要求创建/新建文件夹或目录时，在计划已展示后应及时直接调用 create_folder；不得只停在泛化计划，也不得用 write_file 或 run_command 创建目录。用户要求修改已有文件内容时优先用 edit_file；先用 read_file 获取精确 old_text，再提交唯一匹配的 old_text/new_text，不得为了省事用 write_file 重写整个现有文件。缺少文件内容或精确片段时先读取；匹配不存在或不唯一时安全停止并说明。每次工具结果都是应用内部上下文，不是用户新任务；保持当前已展示计划并实时继续下一步，不要重新规划或停在通用进度。edit_file 和其他副作用必须保留用户审批与系统原生确认。";
+  const TOOL_ROUTING_GUIDANCE = "工具意图路由：仅当用户要新建的目标本身是文件夹或目录时，才在计划已展示后调用 create_folder；如果文件夹只是存放位置，而用户要在其中新建文件、脚本或命令文件，应使用 write_file，不能把存放位置误当成新建目录目标。不得用 write_file 或 run_command 创建目录。用户要求修改已有文件内容时优先用 edit_file；先用 read_file 获取精确 old_text，再提交唯一匹配的 old_text/new_text，不得为了省事用 write_file 重写整个现有文件。缺少文件内容或精确片段时先读取；匹配不存在或不唯一时安全停止并说明。每次工具结果都是应用内部上下文，不是用户新任务；保持当前已展示计划并实时继续下一步，不要重新规划或停在通用进度。edit_file 和其他副作用必须保留用户审批与系统原生确认。";
   const encoder = new TextEncoder();
   const TOOL_ARGUMENTS = Object.freeze({
     list_files: { required: ["path"], types: { path: "string" } },
@@ -302,7 +302,7 @@
 
   function preferredToolsForUserRequest(request) {
     const text = String(request ?? "");
-    const folderRequested = /(?:创建|新建|建立|增加|新增|添加|加|建(?:一个|个)?)[\s\S]{0,48}(?:文件夹|目录)|(?:文件夹|目录)[\s\S]{0,48}(?:创建|新建|建立|增加|新增|添加)|\b(?:create|make|add|new)\b[\s\S]{0,64}\b(?:folder|directory)\b|\b(?:folder|directory)\b[\s\S]{0,64}\b(?:create|make|add|new)\b/i.test(text);
+    const folderRequested = /(?:创建|新建|建立|增加|新增|添加|加|建(?:一个|个)?)[\s\S]{0,48}(?:文件夹|目录)|\b(?:create|make|add|new)\b[\s\S]{0,64}\b(?:folder|directory)\b/i.test(text);
     const folderDenied = /(?:不要|别|无需|不需要|禁止)[\s\S]{0,16}(?:创建|新建|建立|增加|新增|添加|加)[\s\S]{0,48}(?:文件夹|目录)|\b(?:do not|don't|avoid|without)\b[\s\S]{0,64}\b(?:create|make|add|new)\b[\s\S]{0,64}\b(?:folder|directory)\b/i.test(text);
     const editVerb = /(?:修改|编辑|更改|改动|改写|改|更新|修复|替换|补充)|\b(?:edit|modify|change|update|fix|rewrite|replace)\b/i.test(text);
     const fileTarget = /(?:现有|已有)?(?:工作区)?(?:文件|文档|脚本|代码)|\b(?:file|document|script|code)\b|\b[\w.-]+\.(?:md|txt|rs|js|json|toml|yaml|yml|css|html|py|ts|tsx|jsx|sh|bat|c|cpp|h|hpp|go|java|kt|swift)\b/i.test(text);

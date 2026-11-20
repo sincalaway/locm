@@ -1,35 +1,33 @@
 # 部署与运行手册
 
-本文说明 v0.2.14 Windows 桌面安装包的系统依赖、启动、首次配置和常见故障，并保留 v0.2.13 的 Linux 与 Windows GNU 历史包说明。应用基于 Tauri 2：窗口由操作系统提供的 WebView 绘制界面，因此它和应用本身是两回事。Windows 使用 Microsoft Edge WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。缺少相应运行库时，程序可能无法打开窗口。
+本文说明 v0.2.15 Windows x64 NSIS 安装器的系统依赖、启动、首次配置和常见故障，并保留 v0.2.13 Linux 与 Windows GNU 历史包的运行说明。应用基于 Tauri 2：窗口由操作系统提供的 WebView 绘制界面，因此它和应用本身是两回事。Windows 使用 Microsoft Edge WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。缺少相应运行库时，程序可能无法打开窗口。
 
 ## 获取的包是什么
 
-v0.2.14 发布提供 Windows x64 NSIS 安装程序和 `SHA256SUMS.txt` 校验文件。Linux x86_64 便携桌面包和 Windows GNU 便携测试 ZIP 仍可从 v0.2.13 历史发布获取：
+v0.2.15 发布仅提供 Windows x64 NSIS 安装程序；Release 说明中列出该安装器的 SHA-256。v0.2.13 的 Windows GNU 便携测试 ZIP 和 Linux 便携包仍是历史资产，不属于本次发布：
 
 | 平台 | Release 文件 | 类型与主要内容 |
 | --- | --- | --- |
-| Windows x64 | `locm-0.2.14-windows-x64-nsis-setup.exe` | v0.2.14 带安装向导的 NSIS 安装程序，内含 Windows x64 应用 EXE |
-| Linux x86_64 | `locm-0.2.13-linux-x86_64.tar.gz` | v0.2.13 历史包：`local-engine-manager`、`LICENSE`、`README.txt`、`icons/`（PNG、SVG、ICO） |
-| Windows x64 GNU | `locm-0.2.13-windows-x64-gnu-portable-test.zip` | v0.2.13 历史测试包：`local-engine-manager.exe`、同目录 `WebView2Loader.dll`、`LICENSE`、说明和图标 |
+| Windows x64 | `locm-0.2.15-windows-x64-nsis-setup.exe` | 带安装向导的 NSIS 安装程序，内含 Windows x64 GUI 应用 |
 
-Windows 安装器对应 v0.2.14 GitHub Release 资产，从 Linux 使用 `cargo-xwin` 与 `x86_64-pc-windows-msvc` 目标交叉构建；历史 Linux 包为原生构建，GNU 便携包由 `scripts/build-windows-gnu.sh` 构建。Windows 包未在真实 Windows 设备启动验证，不能把交叉构建当作实机测试。
+本版安装器使用 `cargo-xwin` 与 `x86_64-pc-windows-msvc` 目标交叉构建，未在真实 Windows 设备启动验证，不能把交叉构建当作实机测试。
 
 ## Windows x64
 
 1. 确认系统为 64 位 Windows。应用运行仍需要 Microsoft Edge WebView2 Runtime。此 NSIS 安装器配置为：如果 Runtime 缺失，就联网下载并运行微软 WebView2 Bootstrapper；首次安装因此需要互联网连接。若电脑离线，可先从 [Microsoft 官方 WebView2 Runtime 页面](https://developer.microsoft.com/en-us/microsoft-edge/webview2)下载并安装 Evergreen Standalone Runtime。
-2. 双击 `locm-0.2.14-windows-x64-nsis-setup.exe` 并按安装向导操作。安装器会部署 Windows x64 应用。本版安装器未代码签名；静态检查安装器内容时，没有发现单独的 `WebView2Loader.dll`。
+2. 双击 `locm-0.2.15-windows-x64-nsis-setup.exe` 并按安装向导操作。安装器会部署 Windows x64 应用。本版安装器未代码签名；静态检查安装器内容时，没有发现单独的 `WebView2Loader.dll`。
 3. 静态检查本版 MSVC 应用 EXE 的 PE 导入表没有发现 `VCRUNTIME140.dll`；可见的 `api-ms-win-crt-*` 项由 Windows UCRT API set 提供。若启动时仍出现明确的运行库缺失错误，再安装[微软 VC++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)。这与 WebView2 Runtime 是不同的依赖。
 4. 从安装器创建的入口启动应用。安装包不包含模型、推理引擎或模型权重，也不会自动下载这些大型文件。
 
-WebView2 Runtime 是负责显示应用界面的浏览器运行时；本版应用运行仍以它为前提，NSIS 配置会在缺少 Runtime 时联网启动微软 Bootstrapper。Windows GNU 便携 ZIP 会附带 `WebView2Loader.dll`；它只是加载库，不是 Runtime，也不包含完整 Edge 浏览器运行环境。MSVC 安装器中的程序静态检查未发现 `VCRUNTIME140.dll` 导入；遇到具体运行库错误时再安装 VC++ Redistributable。
+WebView2 Runtime 是负责显示应用界面的浏览器运行时；本版应用运行仍以它为前提，NSIS 配置会在缺少 Runtime 时联网启动微软 Bootstrapper。v0.2.13 历史 Windows GNU 便携 ZIP 会附带 `WebView2Loader.dll`；它只是加载库，不是 Runtime，也不包含完整 Edge 浏览器运行环境。MSVC 安装器中的程序静态检查未发现 `VCRUNTIME140.dll` 导入；遇到具体运行库错误时再安装 VC++ Redistributable。
 
-### Windows x64 GNU 便携测试包
+### Windows x64 GNU 便携测试包（v0.2.13 历史资产）
 
-下载并完整解压 `locm-0.2.13-windows-x64-gnu-portable-test.zip`，然后运行 `windows-x64-gnu/local-engine-manager.exe`。不要移走或删除同目录的 `WebView2Loader.dll`。此压缩包不会安装快捷方式或 Windows 服务；运行它仍需要 WebView2 Runtime。该包从 Linux 交叉构建，未在真实 Windows 设备启动验证。
+从 v0.2.13 历史 Release 下载并完整解压 `locm-0.2.13-windows-x64-gnu-portable-test.zip`，然后运行 `windows-x64-gnu/local-engine-manager.exe`。不要移走或删除同目录的 `WebView2Loader.dll`。此压缩包不会安装快捷方式或 Windows 服务；运行它仍需要 WebView2 Runtime。该包从 Linux 交叉构建，未在真实 Windows 设备启动验证。
 
-## Linux x86_64
+## Linux x86_64（v0.2.13 历史包）
 
-此便携程序面向 Linux x86_64，并且是动态链接程序，不是自包含的静态二进制文件。它需要图形桌面会话，以及 GTK 3（原生窗口/控件）和 WebKitGTK 4.1（Tauri 界面渲染）及其系统依赖。Tauri 的[官方 Debian 运行依赖说明](https://v2.tauri.app/distribute/debian/)列出 `libgtk-3-0` 和 `libwebkit2gtk-4.1-0`；[官方 Linux 前置条件](https://v2.tauri.app/start/prerequisites/)按发行版列出编译用依赖。下列是常见运行库包名示例，并非适用于所有 Linux 发行版或版本的通用命令：
+下面是 v0.2.13 历史 Release 中 Linux 便携包的运行说明；它不是 v0.2.15 发布资产。此便携程序面向 Linux x86_64，并且是动态链接程序，不是自包含的静态二进制文件。它需要图形桌面会话，以及 GTK 3（原生窗口/控件）和 WebKitGTK 4.1（Tauri 界面渲染）及其系统依赖。Tauri 的[官方 Debian 运行依赖说明](https://v2.tauri.app/distribute/debian/)列出 `libgtk-3-0` 和 `libwebkit2gtk-4.1-0`；[官方 Linux 前置条件](https://v2.tauri.app/start/prerequisites/)按发行版列出编译用依赖。下列是常见运行库包名示例，并非适用于所有 Linux 发行版或版本的通用命令：
 
 ```sh
 # Debian / Ubuntu：先确认当前发行版仓库提供这些包
@@ -79,11 +77,11 @@ cd linux-x86_64
 
 ## 验证范围与限制
 
-v0.2.14 的平台安装包只有 Windows x64 NSIS 安装器，Release 另附 `SHA256SUMS.txt`。它由 Linux 使用 `cargo-xwin` 和 `x86_64-pc-windows-msvc` 目标交叉构建；静态检查确认安装器包含 Windows x64 GUI 应用，版本为 0.2.14。安装器未代码签名，**没有在真实 Windows 设备启动验证**，也没有进行真实模型端到端测试；不能把交叉构建称为 Windows 实机测试。此安装包不含推理引擎或模型权重。
+v0.2.15 本次发布仅含 Windows x64 NSIS 安装器；安装器从 Linux 交叉构建、未代码签名，**没有在真实 Windows 设备启动验证**，也未进行真实模型端到端测试。该安装器不含推理引擎或模型权重。Windows GNU 便携测试 ZIP 和 Linux x86_64 便携包属于 v0.2.13 历史 Release，不在本次发布中。
 
 `create_folder` 与 `edit_file` 都通过原生工作区后端执行；前者是幂等空目录创建，后者只修改唯一精确匹配的既有 UTF-8 普通文件。`edit_file` 的首次调用不写入，仅显示待确认状态；用户批准后还必须通过系统原生确认，后端会重新读取、验证匹配与路径，再用同目录临时文件原子替换。Rust 与前端回归覆盖工具意图路由、工具结果续接、创建/编辑成功、确认边界、缺失或重复匹配、路径穿越和符号链接逃逸。两个工具均未在用户的 Windows 电脑实机运行验证。
 
-本版回归结果：默认 Rust `cargo test --locked` 23/23、桌面 Rust `cargo test --locked --features desktop --bin local-engine-manager` 90/90、JavaScript `node --test ui/*.test.js` 56/56 通过。Rust 格式检查、修改文件的 JavaScript 语法检查和 `git diff --check` 也通过。Agent 任务展示回归覆盖成功任务中只显示请求与回复、执行事件收进详情，以及历史记录兼容；工具设置回归覆盖总开关全开/全关、部分开启的混合状态与折叠布局，原有工具协议回归覆盖标准/紧凑/旧版函数调用、MiniCPM5 XML、未知工具/参数拒绝、八工具独立启停与禁用工具拒绝、工具意图路由与工具结果续接。工具设置区默认收起且可展开，总开关在折叠时仍可操作。Agent 工具仍未在真实 Windows 设备或真实模型上验证。
+本版回归结果：默认 Rust `cargo test --locked` 23/23、桌面 Rust `cargo test --locked --features desktop --bin local-engine-manager` 90/90、JavaScript `node --test ui/*.test.js` 67/67 通过。Rust 格式检查与 `git diff --check` 也通过。Agent 改进回归覆盖可审阅提案、离线协议/安全基准以及工具意图路由；特别验证了“在已有文件夹内创建命令/脚本”不会误路由为 `create_folder`，而应由 `write_file` 处理。离线基准不启动模型或执行工作区工具；Agent 工具仍未在真实 Windows 设备或真实模型上验证。
 
 Rust 的 Windows `raw-dylib` 链接会将 `kernel32.dll` 解析为 `-lKernel32`；Linux MinGW 的标准导入库名称为小写 `libkernel32.a`，而 GNU ld 在 Linux 大小写敏感的文件系统上无法用大写名称找到它。此仓库用 `./scripts/build-windows-gnu.sh` 选择专用链接包装器，仅对该库名做小写规范化；它不创建临时导入库别名，也不修改全局或系统 linker 配置。Windows 原生 MSVC 工作流与普通 Cargo 构建保持不变。
 

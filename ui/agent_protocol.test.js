@@ -39,12 +39,15 @@ test("a plan is recorded once and the next model request gets an explicit intern
 
 test("clear folder and existing-file edit intents route to dedicated tools", () => {
   assert.deepEqual(preferredToolsForUserRequest("请在工作区新建一个空文件夹 notes/drafts"), ["create_folder"]);
+  assert.deepEqual(preferredToolsForUserRequest("在 qw4 文件夹内创建一个一键清理电脑缓存的命令"), []);
+  assert.deepEqual(preferredToolsForUserRequest("在 qw4 文件夹内新建 clear_cache.bat"), []);
   assert.deepEqual(preferredToolsForUserRequest("请修改现有 README.md 中的旧标题"), ["edit_file"]);
   assert.deepEqual(preferredToolsForUserRequest("帮我把 README.md 改成新的标题"), ["edit_file"]);
   assert.deepEqual(preferredToolsForUserRequest("创建 notes 目录，然后编辑现有 README.md"), ["create_folder", "edit_file"]);
   assert.deepEqual(preferredToolsForUserRequest("不要创建文件夹"), []);
   assert.deepEqual(preferredToolsForUserRequest("不用改 README.md"), []);
   assert.match(TOOL_ROUTING_GUIDANCE, /计划已展示后.*create_folder/);
+  assert.match(TOOL_ROUTING_GUIDANCE, /文件夹只是存放位置.*write_file/);
   assert.match(TOOL_ROUTING_GUIDANCE, /修改已有文件内容时优先用 edit_file/);
   assert.match(TOOL_ROUTING_GUIDANCE, /工具结果都是应用内部上下文/);
 });

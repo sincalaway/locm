@@ -40,7 +40,12 @@ trap 'rm -rf "$compiler_shim_dir"' EXIT
 ln -s "$repo_root/scripts/clang-cl" "$compiler_shim_dir/clang-cl"
 export PATH="$compiler_shim_dir:$PATH"
 export CC_x86_64_pc_windows_msvc="$compiler_shim_dir/clang-cl"
+# tauri-build's static_vcruntime selects static startup/VCRuntime plus dynamic UCRT.
+# Do not additionally force +crt-static; this cross-link setup has unresolved CRT symbols.
 cargo tauri build \
+  --features desktop \
   --runner cargo-xwin \
   --target x86_64-pc-windows-msvc \
-  --bundles nsis
+  --bundles nsis \
+  -- \
+  --no-default-features

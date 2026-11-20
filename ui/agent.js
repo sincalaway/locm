@@ -718,6 +718,7 @@
     render();
     try {
       let duplicatePlanRetriesRemaining = 1;
+      let malformedProtocolRetriesRemaining = 1;
       for (let step = 0; step < 12; step++) {
         if (state.stopRequested) {
           task.status = "paused";
@@ -733,7 +734,15 @@
         const parsed = parseAgentJson(raw);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           task.turns.push({ role: "assistant", content: truncate(raw, 26000) });
-          addEntry(task, "assistant", `模型未返回可识别的 Agent JSON 协议，任务已暂停。请尝试重新描述或继续指示。\n\n${truncate(raw, 8000)}`);
+          const retry = Protocol.appendMalformedResponseRetry(task, malformedProtocolRetriesRemaining);
+          if (retry.status === "retry") {
+            malformedProtocolRetriesRemaining = retry.retriesRemaining;
+            addEntry(task, "status", "本地模型回复不符合 Agent JSON 协议；正在进行一次有限格式纠正。该回复没有执行任何文件操作或命令。");
+            render();
+            continue;
+          }
+          Protocol.appendToolResult(task, "模型连续两次未返回可识别的 Agent JSON 协议；两次回复均没有执行任何工具或命令。");
+          addEntry(task, "assistant", `任务已安全暂停，未执行文件操作或命令。你可以重新描述或继续指示。\n\n最后一次模型回复：\n${truncate(raw, 4000)}`);
           task.status = "paused";
           persist();
           return;

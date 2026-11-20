@@ -30,6 +30,20 @@
     }
   }
 
+  function repairIncompletePlan(source) {
+    const match = String(source ?? "").trim().match(/^(\{\s*"type"\s*:\s*"plan"\s*,\s*"steps"\s*:\s*\[[\s\S]*)\}\s*\)?$/);
+    if (!match) return null;
+    let value;
+    try {
+      value = JSON.parse(`${match[1]}]}`);
+    } catch {
+      return null;
+    }
+    if (value?.type !== "plan" || !Array.isArray(value.steps) || !value.steps.every((step) => typeof step === "string")) return null;
+    if (Object.keys(value).length !== 2) return null;
+    return value;
+  }
+
   function balancedContainerEnd(source, start) {
     const expectedClosers = [];
     let inString = false;
@@ -70,8 +84,12 @@
 
     const fences = [...candidate.matchAll(/```(?:json)?[ \t]*\r?\n?([\s\S]*?)```/gi)];
     if (fences.length) {
-      return fences.length === 1 ? parseObjectCandidate(fences[0][1].trim()) : null;
+      if (fences.length !== 1) return null;
+      const fenced = fences[0][1].trim();
+      return parseObjectCandidate(fenced) || repairIncompletePlan(fenced);
     }
+    const repairedPlan = repairIncompletePlan(candidate);
+    if (repairedPlan) return repairedPlan;
 
     const objects = [];
     let inQuotedProse = false;

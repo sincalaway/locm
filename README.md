@@ -1,11 +1,18 @@
 # llama-server-launcher-rs
 一个独立的 Rust MVP：保留原有 `llama-server` 配置启动示例，并新增两个彼此独立的本地引擎安装流程。它不是 LocModel 的源码，也不包含 LocModel 品牌资产或官方背书。
 
-## v0.2.11 更新
+## v0.2.12 更新
+
+- 修复 Windows NSIS 安装器错误打包命令行程序的问题，确保选择桌面 GUI 目标。v0.2.11 原公开资产仍保留，不建议使用其错误安装器。
+- Agent 可安全修复一种已观察到的 MiniCPM 计划 JSON 结尾错误；其它异常协议最多纠正一次，仍异常则暂停，不执行文件操作或命令。
+- 侧栏页脚从桌面应用读取实际版本，不再写死旧版本。
+- 用户已在 Windows 上确认较早的 v0.2.11 GUI 候选安装包可用，但 v0.2.12 从最终源码重新交叉构建，不能等同于已实机验证。运行需要 WebView2 Runtime；安装器缺少时联网安装。发行包不含引擎或模型权重。
+
+## v0.2.11 更新（历史说明；该版公开安装器错误打包 CLI）
 - Agent 内部继续指令和工作区工具结果不再被误判为新用户任务；计划已显示后不会重复规划，模型重复输出计划时只进行一次有限纠偏，仍异常则安全暂停而不执行新工具。
 - 本地模型若在执行阶段返回普通文本或含糊的 JSON，Agent 只请求一次格式纠正；仍不合规就安全暂停并明确说明没有运行工具或命令。Agent 新增专用 `create_folder` JSON 工具，通过原生工作区后端创建空目录及缺失父目录；只接受相对路径，拒绝路径穿越和符号链接，目标已存在时幂等返回，不通过 shell，也不额外弹确认。
 - Agent 新增专用 `edit_file` JSON 工具，用户要求修改已有文件时优先按唯一精确 `old_text`/`new_text` 替换；缺失或多处匹配会安全失败。只允许工作区内现有 UTF-8 普通文件，拒绝路径穿越和符号链接；通过同目录临时文件原子替换，并沿用应用审批卡与系统原生确认。
-- Windows x64 新增真正的 Tauri/NSIS 安装程序；通过 Linux 上的 `cargo-xwin` 交叉构建 MSVC 目标，**没有在真实 Windows 设备启动验证**。安装器缺少 WebView2 Runtime 时会联网下载并运行微软引导安装器；Runtime 仍是应用运行所需组件。MSVC 应用还导入 `VCRUNTIME140.dll`；NSIS 未捆绑 VC++ Runtime，若系统缺少它，需安装[微软 VC++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)。
+- Windows x64 公开的 NSIS 安装器错误打包了命令行程序而非桌面 GUI，请使用更新版本。
 - 发布包含 Linux x86_64 原生桌面包、Windows x64 NSIS 安装器，以及明确标为未实机验证的 Windows x64 GNU 便携测试 ZIP；所有资产均不包含引擎或模型权重，`SHA256SUMS.txt` 提供校验值。
 - 自动回归：默认 Rust 23/23、desktop Rust 84/84、JavaScript 44/44 通过；`create_folder` 覆盖空目录、幂等、冲突、越界/符号链接拒绝和原生派发；`edit_file` 覆盖唯一精确替换、待确认不写入、缺失/多重/重叠匹配、越界/符号链接拒绝、原子替换、审批派发和确认卡。还验证创建目录/修改文件意图路由以及内部工具结果续接。Agent 工具仅做本机单元/协议测试，未在用户的 Windows 电脑上运行验证。
 
@@ -79,7 +86,7 @@ cargo run --features desktop --bin local-engine-manager
 
 思考行为不提供强制开关，由模型模板/服务器默认逻辑决定；当前无法可靠判断每个 GGUF 是否支持强制思考。投机解码需要单独的草稿模型或解码配置，本项目未管理草稿模型，因此不提供该开关。启动时只传递安装版本 `llama-server --help` 确认支持的参数；没有确认的选项会禁用或拒绝启动。
 
-桌面引擎安装流程支持 Windows x64 和 Linux x86_64 CPU 官方包；其他平台可查看状态，但自动安装按钮不可用。Windows 保留原有引擎安装/启动实现。Tauri 2 依赖操作系统 WebView（Windows 使用 WebView2；Linux 构建需要 GTK/WebKitGTK 开发库）。原 CLI 仍是默认构建目标；只有显式打开 `desktop` feature 才构建桌面窗口。
+桌面引擎安装流程支持 Windows x64 和 Linux x86_64 CPU 官方包；其他平台可查看状态，但自动安装按钮不可用。Windows 保留原有引擎安装/启动实现。Tauri 2 依赖操作系统 WebView（Windows 使用 WebView2；Linux 构建需要 GTK/WebKitGTK 开发库）。默认 feature 仅包含 CLI；桌面窗口需要显式打开 `desktop` feature 并指定 `local-engine-manager` 目标。
 
 在目标平台的原生构建环境中，以下命令会生成对应平台的桌面可执行文件：
 
@@ -87,32 +94,32 @@ cargo run --features desktop --bin local-engine-manager
 cargo build --locked --release --features desktop --bin local-engine-manager
 ```
 
-`tauri.conf.json` 为发行构建启用 Tauri NSIS bundle，`./scripts/build-windows-nsis.sh` 会在 Linux 上使用 `cargo-xwin` 和 `x86_64-pc-windows-msvc` 构建 Windows x64 安装器，输出位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 运行 LocM 仍需要 WebView2 Runtime；安装器配置为在 Runtime 缺失时联网下载并运行微软 Bootstrapper，因此它不是离线 Runtime 包。MSVC 应用的 PE 导入表还包含 `VCRUNTIME140.dll`；NSIS 包不包含 VC++ Redistributable，若系统缺少该运行库，需先安装[微软 VC++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe)。本版 Windows 安装器是交叉构建产物，未在真实 Windows 设备启动验证。
+`tauri.conf.json` 为发行构建启用 Tauri NSIS bundle，`./scripts/build-windows-nsis.sh` 会在 Linux 上使用 `cargo-xwin` 和 `x86_64-pc-windows-msvc` 构建 Windows x64 安装器，输出位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 运行 LocM 仍需要 WebView2 Runtime；安装器配置为在 Runtime 缺失时联网下载并运行微软 Bootstrapper，因此它不是离线 Runtime 包。本版 Windows 安装器是交叉构建产物；实际运行依赖请以发行说明和最终二进制导入表为准，未在真实 Windows 设备启动验证。
 
 **尚未实现或验证的边界：** 操作系统级后台定时任务/系统通知，以及 Telegram、Server 酱、PushPlus、钉钉、飞书、Bark、QQ Webhook 和自定义 Webhook 的真实服务端连通性与实际送达；GPU 加速选择、Safetensors 转 GGUF/量化、图生图、媒体生成进度、视频结果预览、Linux `.deb`/AppImage 与 Windows MSI。推送实现目前只用本机回环 Mock 验证通用 Webhook 请求结构，不会在开发测试期间向真实渠道发送消息。PNG 应用内预览和只读作品索引已接入。Linux 定时任务由应用内调度，只在应用保持打开且本地模型运行时执行；关闭期间错过的周期会跳过。Agent 命令、覆盖和删除会在 Rust 后端弹出系统原生确认框；命令仍以当前用户权限运行，可能访问工作区外文件或网络，这不是操作系统级沙箱。v0.2.7 包含 Agent 问候/身份/能力问题的直接答复，以及本地模型健康检查和网络/HTTP 错误诊断改进；本版验证结果和平台限制见上方更新说明及[部署与运行手册](docs/DEPLOYMENT.md)。没有使用真实模型/媒体权重验证推理或图像/视频生成，交付包不包含模型或媒体权重。CI 目前只构建 CLI，不代表桌面 GUI 发布验证。
 
 ## 使用命令
 
-以下 CLI 命令应在目标 Windows x64 或 Linux x86_64 电脑上运行。`cargo run` 适用于安装了 Rust 的开发环境；桌面 MVP 的开发启动方式见上一节。
+以下 CLI 命令应在目标 Windows x64 或 Linux x86_64 电脑上运行。`cargo run` 适用于安装了 Rust 的开发环境；CLI 命令显式指定 `llama-server-launcher-rs`，桌面 MVP 的开发启动方式见上一节。
 
 ```powershell
 # 查看两套引擎各自状态
-cargo run --locked -- engine status
+cargo run --locked --bin llama-server-launcher-rs -- engine status
 
 # 查看官方可用版本和包大小；不会下载
-cargo run --locked -- engine latest chat
-cargo run --locked -- engine latest media
+cargo run --locked --bin llama-server-launcher-rs -- engine latest chat
+cargo run --locked --bin llama-server-launcher-rs -- engine latest media
 
 # 分开安装；图像和视频都使用同一个 media 引擎
-cargo run --locked -- engine install media
-cargo run --locked -- engine install chat
+cargo run --locked --bin llama-server-launcher-rs -- engine install media
+cargo run --locked --bin llama-server-launcher-rs -- engine install chat
 
 # 仅当接受 llama.cpp 预览版时显式启用
-cargo run --locked -- engine install chat --allow-prerelease
+cargo run --locked --bin llama-server-launcher-rs -- engine install chat --allow-prerelease
 
 # 分开更新；旧版本保留
-cargo run --locked -- engine update chat
-cargo run --locked -- engine update media
+cargo run --locked --bin llama-server-launcher-rs -- engine update chat
+cargo run --locked --bin llama-server-launcher-rs -- engine update media
 ```
 
 安装或更新必须明确指定 `chat` 或 `media`，避免一次意外下载两个引擎。也可使用 `--dir C:\somewhere\engines` 覆盖共同根目录。`engine status` 不请求网络；`engine latest` 只查询官方 API。
@@ -120,7 +127,7 @@ cargo run --locked -- engine update media
 旧的配置启动器仍可按原样使用：
 
 ```powershell
-cargo run --locked -- .\engine.json
+cargo run --locked --bin llama-server-launcher-rs -- .\engine.json
 ```
 
 ## 当前范围与限制
@@ -140,7 +147,7 @@ cargo run --locked -- .\engine.json
 cargo fmt --all -- --check
 cargo test --locked
 cargo test --locked --features desktop --bin local-engine-manager
-cargo build --release --locked
+cargo build --release --locked --bin llama-server-launcher-rs
 cargo check --features desktop --bin local-engine-manager
 ```
 

@@ -1,13 +1,20 @@
 [package]
 name = "llama-server-launcher-rs"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2021"
 description = "Minimal Rust launcher with verified local inference runtime installers"
 license = "MIT"
+default-run = "local-engine-manager"
 
 [features]
-default = []
+default = ["cli"]
+cli = []
 desktop = ["dep:tauri", "dep:tauri-plugin-dialog"]
+
+[[bin]]
+name = "llama-server-launcher-rs"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [[bin]]
 name = "local-engine-manager"

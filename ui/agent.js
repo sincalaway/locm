@@ -7,6 +7,7 @@
   const TASKS_KEY = "locm-agent-tasks-v1";
   const WORKSPACE_KEY = "locm-agent-workspace-v1";
   const CURRENT_TASK_KEY = "locm-agent-current-task-v1";
+  const TOOLS_KEY = "locm-agent-enabled-tools-v1";
   const CONTINUATION_RULE = "只有真实用户发起的新任务或明确追加要求时才需要生成计划。以“【LocM 应用内部继续指令；不是用户新请求】”开头，或以“【LocM 应用内部工作区工具结果；不是用户新请求】”开头的消息，以及旧记录中以“工作区工具结果：”开头的消息，都是应用内部上下文，不是用户请求。计划一旦展示，收到这些内部消息后禁止重复或重写计划；应按已展示计划直接返回下一步工具调用、进度消息或完成总结。";
   const MAX_TASKS = 40;
   const MAX_TURNS = 50;
@@ -36,6 +37,7 @@
   const state = {
     tasks: loadTasks(),
     workspace: loadWorkspace(),
+    enabledTools: loadEnabledTools(),
     currentTaskId: loadCurrentTaskId(),
     runtime: { running: false, modelName: null },
     attachments: [],
@@ -58,6 +60,16 @@
   };
   function loadWorkspace() {
     try { return localStorage.getItem(WORKSPACE_KEY) || ""; } catch { return ""; }
+  }
+  function loadEnabledTools() {
+    try {
+      const stored = localStorage.getItem(TOOLS_KEY);
+      return Protocol.normalizeEnabledTools(stored === null ? null : JSON.parse(stored));
+    } catch { return Protocol.normalizeEnabledTools(null); }
+  }
+  function saveEnabledTools() {
+    try { localStorage.setItem(TOOLS_KEY, JSON.stringify(state.enabledTools)); return true; }
+    catch { notify("工具开关无法保存到本机存储；已恢复到上次设置。", true); return false; }
   }
   function loadCurrentTaskId() {
     try { return localStorage.getItem(CURRENT_TASK_KEY) || null; } catch { return null; }
@@ -197,6 +209,54 @@
     workspaceDefaultLabel.textContent = workspaceView.secondaryText;
     workspaceDefaultLabel.title = workspaceView.secondaryText;
     $("#agent-model-button").title = state.runtime.running ? "前往运行页面管理本地模型" : "本地模型尚未启动；点击前往运行页面";
+  }
+
+  function renderToolSettings() {
+    const container = $("#agent-tool-switches");
+    if (!container.dataset.initialized) {
+      for (const tool of Protocol.TOOL_OPTIONS) {
+        const label = document.createElement("label");
+        label.className = "agent-tool-setting";
+        label.title = tool.description;
+        const text = document.createElement("span");
+        text.textContent = tool.label;
+        const track = document.createElement("span");
+        track.className = "agent-tool-switch";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.dataset.agentTool = tool.id;
+        input.setAttribute("role", "switch");
+        input.setAttribute("aria-label", `启用${tool.label}`);
+        input.addEventListener("change", () => {
+          if (state.busy || activeTask()?.pendingAction) return renderToolSettings();
+          const previous = state.enabledTools;
+          const next = input.checked
+            ? [...previous, tool.id]
+            : previous.filter((name) => name !== tool.id);
+          state.enabledTools = Protocol.normalizeEnabledTools(next);
+          if (!saveEnabledTools()) state.enabledTools = previous;
+          renderToolSettings();
+        });
+        track.append(input);
+        label.append(text, track);
+        container.append(label);
+      }
+      container.dataset.initialized = "true";
+    }
+    const enabledCount = state.enabledTools.length;
+    $("#agent-tool-count").textContent = `${enabledCount}/8 已启用`;
+    const pending = Boolean(activeTask()?.pendingAction);
+    const locked = state.busy || pending;
+    $("#agent-tool-settings-note").textContent = state.busy
+      ? "任务执行期间暂不能切换；设置保存在本机。关闭的工具不会提供给模型或执行。"
+      : pending
+        ? "请先批准或拒绝待确认操作，再修改工具开关。设置保存在本机。"
+        : "可分别启用或关闭；设置保存在本机。关闭后不会提供给模型，也无法执行。";
+    container.querySelectorAll("[data-agent-tool]").forEach((input) => {
+      input.checked = state.enabledTools.includes(input.dataset.agentTool);
+      input.disabled = locked;
+      input.setAttribute("aria-checked", String(input.checked));
+    });
   }
 
   function renderTaskList() {
@@ -411,6 +471,7 @@
   function render() {
     renderTaskList();
     renderToolbar();
+    renderToolSettings();
     renderTranscript();
     renderAttachments();
     updateComposerState();
@@ -471,7 +532,7 @@
     return rows.join("\n") || "工作文件夹为空。";
   }
   function parseToolAction(action) {
-    return Protocol.parseToolAction(action);
+    return Protocol.parseToolAction(action, state.enabledTools);
   }
 
   function processPlanResponse(task, raw, parsed, options = {}) {
@@ -528,16 +589,19 @@
         && !turn.content.startsWith(Protocol.TOOL_RESULT_PREFIX)
         && !turn.content.startsWith(Protocol.CONTINUATION_PREFIX)
         && !turn.content.startsWith("工作区工具结果："));
-      const preferredTools = Protocol.preferredToolsForUserRequest(latestUserGoal?.content || "");
+      const preferredTools = Protocol.preferredToolsForUserRequest(latestUserGoal?.content || "").filter((name) => state.enabledTools.includes(name));
+      const enabledLabels = Protocol.TOOL_OPTIONS.filter((tool) => state.enabledTools.includes(tool.id)).map((tool) => tool.label);
+      const disabledLabels = Protocol.TOOL_OPTIONS.filter((tool) => !state.enabledTools.includes(tool.id)).map((tool) => tool.label);
+      const availabilityRule = `本轮允许的工作区工具：${enabledLabels.join("、") || "无"}。${disabledLabels.length ? `已关闭且禁止调用的工具：${disabledLabels.join("、")}；不得通过JSON回退、XML或其他格式绕过开关。` : "八个工具均已启用。"}如果用户目标需要已关闭的工具，请用message说明需要用户先开启它。`;
       const routeHint = preferredTools.length ? `\n\n本轮用户目标的专用工具路由：${preferredTools.join("、")}。展示计划后应按计划及时调用这些工具；每个工具结果返回后继续当前计划。` : "";
       const effectivePrompt = systemPrompt === SYSTEM_PROMPT
-        ? `${systemPrompt}\n\n${TOOL_CALLING_RULE}\n\n${Protocol.TOOL_ROUTING_GUIDANCE}${routeHint}\n\n${CONTINUATION_RULE}`
+        ? `${systemPrompt}\n\n${TOOL_CALLING_RULE}\n\n${availabilityRule}\n\n${Protocol.TOOL_ROUTING_GUIDANCE}${routeHint}\n\n${CONTINUATION_RULE}`
         : systemPrompt;
       const raw = await invoke("chat_complete", {
         messages: LocmAgentContext.buildMessages(effectivePrompt, task.turns, budget.inputBytes),
         temperature: 0.2,
         maxTokens: budget.replyTokens,
-        agentTools: true,
+        agentEnabledTools: state.enabledTools,
       });
       Execution.updateStep(task, step.id, "completed", truncate(raw, 8000));
       persist();
@@ -1174,7 +1238,9 @@
       return;
     }
     if (!state.workspace) { notify("请先选择工作文件夹。", true); return; }
-    const directFolderRequest = LocmAgentIntent.createFolderRequest(prompt, state.attachments.length > 0);
+    const directFolderRequest = state.enabledTools.includes("create_folder")
+      ? LocmAgentIntent.createFolderRequest(prompt, state.attachments.length > 0)
+      : null;
     if (!state.runtime.running && !directFolderRequest?.simple) { notify("请先在“运行”页面启动一个本地模型。", true); return; }
     if (!task) task = createTask(prompt || state.attachments[0]?.name || "新任务", userText);
     else {

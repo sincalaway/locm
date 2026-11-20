@@ -17,6 +17,23 @@
     delete_file: { required: ["path"], types: { path: "string" } },
     run_command: { required: ["program", "args"], types: { program: "string", args: "array" } },
   });
+  const TOOL_OPTIONS = Object.freeze([
+    { id: "list_files", label: "列出文件", description: "查看工作区内的文件与子目录。" },
+    { id: "search_files", label: "搜索文本", description: "搜索工作区内受限大小的UTF-8文本。" },
+    { id: "read_file", label: "读取文件", description: "读取工作区内的UTF-8文本文件。" },
+    { id: "create_folder", label: "创建文件夹", description: "在工作区内创建空文件夹。" },
+    { id: "write_file", label: "新建文件", description: "在工作区内创建新文件；覆盖仍需确认。" },
+    { id: "edit_file", label: "编辑文件", description: "按唯一精确匹配修改文件；需要批准。" },
+    { id: "delete_file", label: "删除文件", description: "删除工作区内的普通文件；需要批准。" },
+    { id: "run_command", label: "运行命令", description: "在工作区目录启动程序；需要批准。" },
+  ]);
+  function normalizeEnabledTools(value) {
+    const all = TOOL_OPTIONS.map((tool) => tool.id);
+    if (!Array.isArray(value)) return all;
+    const supplied = new Set(value.filter((item) => typeof item === "string"));
+    if (value.length && !all.some((tool) => supplied.has(tool))) return all;
+    return all.filter((tool) => supplied.has(tool));
+  }
 
   function appendContinuation(task, instruction) {
     if (!task || !Array.isArray(task.turns)) throw new TypeError("task.turns must be an array");
@@ -197,9 +214,10 @@
     return { status: "retry", retriesRemaining: remaining - 1 };
   }
 
-  function parseToolAction(action) {
+  function parseToolAction(action, enabledTools = null) {
     if (!action || typeof action !== "object" || action.type !== "tool_call") return null;
     const name = String(action.name || "");
+    if (Array.isArray(enabledTools) && !enabledTools.includes(name)) throw new Error(`工具“${name || "未知"}”已关闭，尚未执行`);
     if (name === "search_files") {
       if (typeof action.path !== "string" || typeof action.query !== "string") throw new Error("搜索工具需要 path 和 query 文本字段");
       if (!action.query.trim() || encoder.encode(action.query).length > 256) throw new Error("搜索内容不能为空，且最多为 256 字节");
@@ -333,5 +351,5 @@
     return result;
   }
 
-  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
+  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
 });

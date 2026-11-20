@@ -201,6 +201,10 @@
               <button class="agent-model-button" id="agent-model-button" type="button" title="前往运行页面管理模型"><i id="agent-model-dot"></i><span id="agent-model-label">本地模型：检查中</span><b>⌄</b></button>
               <div class="agent-workspace-picker"><div class="agent-workspace-context"><span id="agent-workspace-context-label">新任务默认工作区</span><div class="agent-workspace-paths"><strong id="agent-workspace-label">尚未选择</strong><small id="agent-workspace-default-label" hidden></small></div></div><button class="button secondary" id="agent-choose-workspace" type="button" title="更换新任务默认目录；不会更改当前或历史任务绑定的目录">更换默认</button></div>
             </header>
+            <details id="agent-tool-settings" class="agent-tool-settings" open>
+              <summary><strong>工作区工具</strong><span id="agent-tool-count">8/8 已启用</span></summary>
+              <div class="agent-tool-settings-content"><small id="agent-tool-settings-note">可分别启用或关闭；设置保存在本机。关闭后不会提供给模型，也无法执行。</small><div id="agent-tool-switches" class="agent-tool-switches"></div></div>
+            </details>
             <div class="agent-stage">
               <div id="agent-welcome" class="agent-welcome">
                 <div class="agent-welcome-mark">▣</div>

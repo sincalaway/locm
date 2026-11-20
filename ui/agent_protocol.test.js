@@ -1,7 +1,18 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildMessages } = require("./agent_context.js");
-const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+
+test("Agent exposes eight independently configurable tools and refuses disabled actions", () => {
+  const all = normalizeEnabledTools();
+  assert.equal(TOOL_OPTIONS.length, 8);
+  assert.equal(all.length, 8);
+  assert.deepEqual(normalizeEnabledTools([]), []);
+  assert.deepEqual(normalizeEnabledTools(["read_file", "unknown", "create_folder"]), ["read_file", "create_folder"]);
+  assert.equal(normalizeEnabledTools(["future_tool"]).length, 8);
+  assert.throws(() => parseToolAction({ type: "tool_call", name: "read_file", path: "a.txt" }, ["list_files"]), /已关闭/);
+  assert.deepEqual(parseToolAction({ type: "tool_call", name: "read_file", path: "a.txt" }, ["read_file"]), { name: "read_file", path: "a.txt" });
+});
 
 test("a plan is recorded once and the next model request gets an explicit internal continuation", () => {
   const task = { needsPlan: true, plan: [], turns: [{ role: "user", content: "检查项目并修复问题" }] };

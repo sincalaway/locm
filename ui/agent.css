@@ -40,3 +40,23 @@
 .agent-workspace-context{display:grid;min-width:0;gap:3px}.agent-workspace-context>span{font-size:9px;font-weight:700;line-height:1.2}.agent-workspace-context .agent-workspace-paths{max-width:min(42vw,460px)}.agent-workspace-context .agent-workspace-paths small{font-size:9px}
 
 .agent-task-remove:disabled{opacity:.45;cursor:not-allowed}
+
+.agent-tool-settings{flex:0 0 auto;border-bottom:1px solid var(--line);background:var(--surface)}
+.agent-tool-settings>summary{display:flex;align-items:center;gap:9px;padding:7px 14px;color:var(--ink);cursor:pointer;list-style:none;font-size:10px}
+.agent-tool-settings>summary::-webkit-details-marker{display:none}
+.agent-tool-settings>summary::after{content:"⌄";margin-left:auto;color:var(--muted)}
+.agent-tool-settings[open]>summary::after{content:"⌃"}
+.agent-tool-settings>summary span{color:var(--muted);font-size:9px;font-weight:500}
+.agent-tool-settings-content{display:grid;gap:6px;padding:0 14px 9px}
+.agent-tool-settings-content>small{color:var(--muted);font-size:9px;line-height:1.4}
+.agent-tool-switches{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}
+.agent-tool-setting{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:7px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--surface-alt);color:var(--ink);font-size:9px;cursor:pointer}
+.agent-tool-setting>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-tool-switch{position:relative;width:28px;height:16px;flex:0 0 auto;border-radius:12px;background:#a7ada9;transition:background .15s}
+.agent-tool-switch input{position:absolute;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.agent-tool-switch:has(input:checked){background:var(--green)}
+.agent-tool-switch::after{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;content:"";pointer-events:none;transition:transform .15s}
+.agent-tool-switch:has(input:checked)::after{transform:translateX(12px)}
+.agent-tool-switch:has(input:focus-visible){outline:2px solid var(--green);outline-offset:2px}
+.agent-tool-switch:has(input:disabled){opacity:.48;cursor:not-allowed}
+@media(max-width:800px){.agent-tool-settings>summary{padding-right:10px;padding-left:10px}.agent-tool-settings-content{padding-right:10px;padding-left:10px}.agent-tool-switches{grid-template-columns:repeat(2,minmax(0,1fr))}}

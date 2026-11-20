@@ -351,8 +351,8 @@ struct ChatChoice {
     message: ChatMessage,
 }
 
-fn agent_tool_definitions() -> serde_json::Value {
-    serde_json::json!([
+fn agent_tool_definitions(enabled_tools: &[String]) -> serde_json::Value {
+    let all = serde_json::json!([
         { "type": "function", "function": { "name": "list_files", "description": "列出所选工作区内的文件和子目录；path为相对路径，使用.表示工作区根目录。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "search_files", "description": "在所选工作区内搜索UTF-8文本；只能使用工作区内的相对目录路径。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "query": { "type": "string" }, "caseSensitive": { "type": "boolean" } }, "required": ["path", "query"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "read_file", "description": "读取所选工作区内的UTF-8文本文件；只能使用相对路径。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
@@ -361,7 +361,19 @@ fn agent_tool_definitions() -> serde_json::Value {
         { "type": "function", "function": { "name": "edit_file", "description": "以唯一精确old_text/new_text片段修改所选工作区内的现有文件；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old_text": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["path", "old_text", "new_text"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "delete_file", "description": "删除所选工作区内的普通文件；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "run_command", "description": "在所选工作区作为当前目录运行一个程序；必须提供程序名和argv参数，不使用shell；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "program": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } } }, "required": ["program", "args"], "additionalProperties": false } } }
-    ])
+    ]);
+    serde_json::Value::Array(
+        all.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|tool| {
+                tool.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|name| enabled_tools.iter().any(|enabled| enabled == name))
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 fn agent_tool_fields(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
@@ -380,12 +392,20 @@ fn agent_tool_fields(name: &str) -> Option<(&'static [&'static str], &'static [&
     }
 }
 
-fn normalize_agent_tool_call(call: &serde_json::Value) -> Result<String, String> {
+fn normalize_agent_tool_call(
+    call: &serde_json::Value,
+    enabled_tools: &[String],
+) -> Result<String, String> {
     let function = call.get("function").unwrap_or(call);
     let name = function
         .get("name")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "本机模型返回的工具调用缺少函数名".to_string())?;
+    if !enabled_tools.iter().any(|enabled| enabled == name) {
+        return Err(format!(
+            "本机模型调用了已关闭的工具：{name}；此次没有执行工具"
+        ));
+    }
     let (required, allowed) =
         agent_tool_fields(name).ok_or_else(|| format!("本机模型请求了未开放的工具：{name}"))?;
     let raw_arguments = function
@@ -416,7 +436,10 @@ fn normalize_agent_tool_call(call: &serde_json::Value) -> Result<String, String>
         .map_err(|error| format!("无法规范化本机模型工具调用：{error}"))
 }
 
-fn normalize_agent_completion(response: &serde_json::Value) -> Result<String, String> {
+fn normalize_agent_completion(
+    response: &serde_json::Value,
+    enabled_tools: &[String],
+) -> Result<String, String> {
     let message = response
         .get("choices")
         .and_then(serde_json::Value::as_array)
@@ -431,10 +454,10 @@ fn normalize_agent_completion(response: &serde_json::Value) -> Result<String, St
         if calls.len() != 1 {
             return Err("本机模型一次必须只调用一个工具；此次没有执行工具".to_string());
         }
-        return normalize_agent_tool_call(&calls[0]);
+        return normalize_agent_tool_call(&calls[0], enabled_tools);
     }
     if let Some(function_call) = message.get("function_call") {
-        return normalize_agent_tool_call(function_call);
+        return normalize_agent_tool_call(function_call, enabled_tools);
     }
     message
         .get("content")
@@ -447,7 +470,7 @@ fn build_agent_chat_payload(
     messages: &[ChatMessage],
     temperature: f32,
     max_tokens: u32,
-    agent_tools: bool,
+    enabled_tools: &[String],
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "model": "local-model",
@@ -456,8 +479,8 @@ fn build_agent_chat_payload(
         "max_tokens": max_tokens,
         "stream": false
     });
-    if agent_tools {
-        payload["tools"] = agent_tool_definitions();
+    if !enabled_tools.is_empty() {
+        payload["tools"] = agent_tool_definitions(enabled_tools);
         payload["tool_choice"] = serde_json::json!("auto");
         payload["parallel_tool_calls"] = serde_json::json!(false);
     }
@@ -471,8 +494,24 @@ mod agent_tool_protocol_tests {
     };
     use serde_json::{json, Value};
 
+    fn all_tools() -> Vec<String> {
+        [
+            "list_files",
+            "search_files",
+            "read_file",
+            "create_folder",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "run_command",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
     fn normalized_action(response: Value) -> Value {
-        serde_json::from_str(&normalize_agent_completion(&response).unwrap()).unwrap()
+        serde_json::from_str(&normalize_agent_completion(&response, &all_tools()).unwrap()).unwrap()
     }
 
     #[test]
@@ -523,7 +562,7 @@ mod agent_tool_protocol_tests {
             "content": "{\"type\":\"done\",\"message\":\"ok\"}", "tool_calls": []
         } }] });
         assert_eq!(
-            normalize_agent_completion(&text).unwrap(),
+            normalize_agent_completion(&text, &all_tools()).unwrap(),
             "{\"type\":\"done\",\"message\":\"ok\"}"
         );
     }
@@ -531,27 +570,30 @@ mod agent_tool_protocol_tests {
     #[test]
     fn rejects_unknown_multiple_incomplete_and_extra_argument_tool_calls() {
         let call = |name: &str, arguments: Value| json!({ "choices": [{ "message": { "tool_calls": [{ "name": name, "arguments": arguments }] } }] });
-        assert!(
-            normalize_agent_completion(&call("run_shell", json!({ "command": "whoami" }))).is_err()
-        );
-        assert!(normalize_agent_completion(&call("read_file", json!({}))).is_err());
-        assert!(normalize_agent_completion(&call(
-            "read_file",
-            json!({ "path": "a", "outside": true })
-        ))
+        assert!(normalize_agent_completion(
+            &call("run_shell", json!({ "command": "whoami" })),
+            &all_tools()
+        )
+        .is_err());
+        assert!(normalize_agent_completion(&call("read_file", json!({})), &all_tools()).is_err());
+        assert!(normalize_agent_completion(
+            &call("read_file", json!({ "path": "a", "outside": true })),
+            &all_tools()
+        )
         .is_err());
         let multiple = json!({ "choices": [{ "message": { "tool_calls": [
             { "name": "read_file", "arguments": { "path": "a" } },
             { "name": "read_file", "arguments": { "path": "b" } }
         ] } }] });
-        assert!(normalize_agent_completion(&multiple)
+        assert!(normalize_agent_completion(&multiple, &all_tools())
             .unwrap_err()
             .contains("只调用一个工具"));
     }
 
     #[test]
     fn exposes_all_workspace_tools_and_keeps_plain_text_responses() {
-        let tools = agent_tool_definitions();
+        let enabled = all_tools();
+        let tools = agent_tool_definitions(&enabled);
         let names: Vec<_> = tools
             .as_array()
             .unwrap()
@@ -572,7 +614,7 @@ mod agent_tool_protocol_tests {
             ]
         );
         assert_eq!(
-            normalize_agent_completion(&json!({ "choices": [{ "message": { "content": "{\"type\":\"done\",\"message\":\"ok\"}" } }] })).unwrap(),
+            normalize_agent_completion(&json!({ "choices": [{ "message": { "content": "{\"type\":\"done\",\"message\":\"ok\"}" } }] }), &enabled).unwrap(),
             "{\"type\":\"done\",\"message\":\"ok\"}"
         );
     }
@@ -589,16 +631,20 @@ mod agent_tool_protocol_tests {
                 content: "Inspect the workspace".into(),
             },
         ];
-        let payload = build_agent_chat_payload(&messages, 0.2, 2048, true);
+        let enabled = vec!["read_file".to_string()];
+        let payload = build_agent_chat_payload(&messages, 0.2, 2048, &enabled);
         assert_eq!(payload["model"], "local-model");
         assert_eq!(payload["tool_choice"], "auto");
         assert_eq!(payload["parallel_tool_calls"], false);
-        assert_eq!(payload["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(payload["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
         assert_eq!(payload["messages"].as_array().unwrap().len(), 2);
 
-        let fallback = build_agent_chat_payload(&messages, 0.2, 2048, false);
+        let fallback = build_agent_chat_payload(&messages, 0.2, 2048, &[]);
         assert!(fallback.get("tools").is_none());
         assert!(fallback.get("tool_choice").is_none());
+        let disabled_response = json!({ "choices": [{ "message": { "tool_calls": [{ "name": "delete_file", "arguments": { "path": "a.txt" } }] } }] });
+        assert!(normalize_agent_completion(&disabled_response, &enabled).is_err());
     }
 }
 
@@ -2166,7 +2212,7 @@ async fn chat_complete(
     messages: Vec<ChatMessage>,
     temperature: f32,
     max_tokens: u32,
-    agent_tools: bool,
+    agent_enabled_tools: Vec<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if !(1..=4096).contains(&max_tokens) {
@@ -2205,13 +2251,14 @@ async fn chat_complete(
             "http://{}:{}/v1/chat/completions",
             status.bind_host, settings.api_port
         );
-        let payload = build_agent_chat_payload(&messages, temperature, max_tokens, agent_tools);
+        let payload =
+            build_agent_chat_payload(&messages, temperature, max_tokens, &agent_enabled_tools);
         let response = client
             .post(&url)
             .json(&payload)
             .send()
             .map_err(|error| format_agent_transport_error("推理请求", &url, &error))?;
-        let response = if agent_tools
+        let response = if !agent_enabled_tools.is_empty()
             && matches!(
                 response.status(),
                 reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
@@ -2244,7 +2291,7 @@ async fn chat_complete(
         let result: serde_json::Value = response
             .json()
             .map_err(|error| format!("无法解析模型回复：{error}"))?;
-        normalize_agent_completion(&result)
+        normalize_agent_completion(&result, &agent_enabled_tools)
     })
     .await
     .map_err(|error| format!("对话任务失败：{error}"))?

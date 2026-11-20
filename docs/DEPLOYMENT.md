@@ -71,7 +71,7 @@ cd linux-x86_64
 ## 常见启动问题
 
 - **Windows 提示 WebView2 缺失、窗口空白或程序无法显示界面：** 安装/修复 Microsoft WebView2 Evergreen Runtime；本版 NSIS 安装器缺少 Runtime 时会尝试联网运行微软 Bootstrapper。安装器中的 `WebView2Loader.dll` 只负责连接 Runtime，不是 Runtime 本身。
-- **Agent 工具调用不稳定或服务端拒绝工具字段：** v0.2.13不按模型名称限制可选的本地模型，会向当前模型提供固定的OpenAI `tools` schema，并在llama-server确实支持时启动 `--jinja`；旧服务端若以HTTP 400/422拒绝工具字段，会重试原文本协议。模型/模板不能原生调用时也可回退到通用JSON `tool_call`协议。标准 OpenAI/llama.cpp工具响应和 MiniCPM5 `<function>/<param>` XML（仅为额外适配）会映射到同一管线；不同模型遵循工具协议的能力可能不同。未知工具、字段、类型、多重调用会安全停止。工具只操作已选工作区；覆盖、编辑、删除和命令仍需应用审批卡，命令仍需系统原生确认。
+- **Agent 工具调用不稳定或服务端拒绝工具字段：** v0.2.13不按模型名称限制可选的本地模型，会向当前模型提供固定的OpenAI `tools` schema，并在llama-server确实支持时启动 `--jinja`；旧服务端若以HTTP 400/422拒绝工具字段，会重试原文本协议。模型/模板不能原生调用时也可回退到通用JSON `tool_call`协议。标准 OpenAI/llama.cpp工具响应和 MiniCPM5 `<function>/<param>` XML（仅为额外适配）会映射到同一管线；不同模型遵循工具协议的能力可能不同。Agent页面“工作区工具”区域可逐个启用或关闭八个工具；默认全部开启，设置保存在本机。关闭的工具不发送给模型，并由前端和Rust后端双重拒绝。未知工具、字段、类型、多重调用会安全停止。工具只操作已选工作区；覆盖、编辑、删除和命令仍需应用审批卡，命令仍需系统原生确认。
 - **Linux 报 `libgtk-3.so.0`、`libwebkit2gtk-4.1.so.0` 或其他共享库缺失：** 按当前发行版安装 GTK 3、WebKitGTK 4.1 运行库及报错指出的依赖。可在终端运行 `ldd ./local-engine-manager` 查找标记为 `not found` 的库；该命令只用于定位，不会自动安装依赖。
 - **Linux 终端提示权限不足：** 在解压目录运行 `chmod +x local-engine-manager`，再从图形桌面会话运行 `./local-engine-manager`。这是桌面 GUI 程序，不适用于没有图形显示会话的纯 headless 环境。
 - **引擎安装或模型下载失败：** 检查网络/代理连接、目标磁盘余量和下载地址可达性；区分“引擎未安装”和“模型未导入/下载”。应用包本身不会补齐这些文件。
@@ -79,11 +79,11 @@ cd linux-x86_64
 
 ## 验证范围与限制
 
-v0.2.13 发布检查包括Rust格式检查、默认与桌面Rust测试、JavaScript回归测试及语法检查、Linux x86_64原生构建，以及Windows x64 NSIS和GNU便携测试包构建。NSIS安装器从Linux使用 `cargo-xwin` 与 `x86_64-pc-windows-msvc` 目标交叉构建；所有资产静态检查，不含模型权重。此次加入标准工具schema、llama.cpp响应归一化、MiniCPM5 XML解析和兼容回退。Windows包由Linux交叉构建且未代码签名，**没有在真实Windows设备启动验证**，也没有在用户电脑运行MiniCPM5-1B或真实模型端到端推理测试；不能把交叉构建称为Windows实机测试。
+v0.2.13 发布检查包括Rust格式检查、默认与桌面Rust测试、JavaScript回归测试及语法检查、Linux x86_64原生构建，以及Windows x64 NSIS和GNU便携测试包构建。NSIS安装器从Linux使用 `cargo-xwin` 与 `x86_64-pc-windows-msvc` 目标交叉构建；所有资产静态检查，不含模型权重。此次加入标准工具schema、llama.cpp响应归一化、MiniCPM5 XML解析、兼容回退和八个独立工具开关。Windows包由Linux交叉构建且未代码签名，**没有在真实Windows设备启动验证**，也没有在用户电脑运行MiniCPM5-1B或真实模型端到端推理测试；不能把交叉构建称为Windows实机测试。
 
 `create_folder` 与 `edit_file` 都通过原生工作区后端执行；前者是幂等空目录创建，后者只修改唯一精确匹配的既有 UTF-8 普通文件。`edit_file` 的首次调用不写入，仅显示待确认状态；用户批准后还必须通过系统原生确认，后端会重新读取、验证匹配与路径，再用同目录临时文件原子替换。Rust 与前端回归覆盖工具意图路由、工具结果续接、创建/编辑成功、确认边界、缺失或重复匹配、路径穿越和符号链接逃逸。两个工具均未在用户的 Windows 电脑实机运行验证。
 
-本次回归结果：默认Rust `cargo test --locked` 23/23、desktop Rust `cargo test --locked --features desktop --bin local-engine-manager` 90/90、JavaScript `node --test ui/*.test.js` 51/51通过；其中Rust工具协议6/6测试。Rust格式、JavaScript语法、构建和 `git diff --check` 以实际发布验证结果为准。Agent协议回归覆盖标准/紧凑/旧版函数调用、MiniCPM5 XML、未知工具/参数拒绝、工具意图路由与工具结果续接。上述Agent工具尚未在用户的Windows电脑实机或MiniCPM5模型上验证。
+本次回归结果：默认Rust `cargo test --locked` 23/23、desktop Rust `cargo test --locked --features desktop --bin local-engine-manager` 90/90、JavaScript `node --test ui/*.test.js` 52/52通过；其中Rust工具协议6/6测试。Rust格式、JavaScript语法、构建和 `git diff --check` 以实际发布验证结果为准。Agent协议回归覆盖标准/紧凑/旧版函数调用、MiniCPM5 XML、未知工具/参数拒绝、八工具启停与禁用工具拒绝、工具意图路由与工具结果续接。上述Agent工具尚未在用户的Windows电脑实机或MiniCPM5模型上验证。
 
 Rust 的 Windows `raw-dylib` 链接会将 `kernel32.dll` 解析为 `-lKernel32`；Linux MinGW 的标准导入库名称为小写 `libkernel32.a`，而 GNU ld 在 Linux 大小写敏感的文件系统上无法用大写名称找到它。此仓库用 `./scripts/build-windows-gnu.sh` 选择专用链接包装器，仅对该库名做小写规范化；它不创建临时导入库别名，也不修改全局或系统 linker 配置。Windows 原生 MSVC 工作流与普通 Cargo 构建保持不变。
 

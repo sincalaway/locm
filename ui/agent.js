@@ -213,6 +213,17 @@
 
   function renderToolSettings() {
     const container = $("#agent-tool-switches");
+    const masterSwitch = $("#agent-tool-all");
+    if (!masterSwitch.dataset.initialized) {
+      masterSwitch.addEventListener("change", () => {
+        if (state.busy || activeTask()?.pendingAction) return renderToolSettings();
+        const previous = state.enabledTools;
+        state.enabledTools = Protocol.setAllToolsEnabled(masterSwitch.checked);
+        if (!saveEnabledTools()) state.enabledTools = previous;
+        renderToolSettings();
+      });
+      masterSwitch.dataset.initialized = "true";
+    }
     if (!container.dataset.initialized) {
       for (const tool of Protocol.TOOL_OPTIONS) {
         const label = document.createElement("label");
@@ -245,13 +256,21 @@
     }
     const enabledCount = state.enabledTools.length;
     $("#agent-tool-count").textContent = `${enabledCount}/8 已启用`;
+    const masterState = Protocol.masterToolSwitchState(state.enabledTools);
     const pending = Boolean(activeTask()?.pendingAction);
     const locked = state.busy || pending;
+    masterSwitch.checked = masterState.checked;
+    masterSwitch.indeterminate = masterState.indeterminate;
+    masterSwitch.disabled = locked;
+    masterSwitch.setAttribute("aria-checked", masterState.indeterminate ? "mixed" : String(masterState.checked));
+    masterSwitch.setAttribute("aria-label", masterState.indeterminate
+      ? `${enabledCount}/8 个工具已启用；切换可全部启用`
+      : masterState.checked ? "关闭全部八个工作区工具" : "启用全部八个工作区工具");
     $("#agent-tool-settings-note").textContent = state.busy
       ? "任务执行期间暂不能切换；设置保存在本机。关闭的工具不会提供给模型或执行。"
       : pending
         ? "请先批准或拒绝待确认操作，再修改工具开关。设置保存在本机。"
-        : "可分别启用或关闭；设置保存在本机。关闭后不会提供给模型，也无法执行。";
+        : "可使用总开关全部启用或关闭，也可分别设置；设置保存在本机。关闭的工具不会提供给模型或执行。";
     container.querySelectorAll("[data-agent-tool]").forEach((input) => {
       input.checked = state.enabledTools.includes(input.dataset.agentTool);
       input.disabled = locked;
@@ -319,7 +338,8 @@
     approval.hidden = true;
     if (!hasTask) return;
 
-    task.entries.forEach((entry) => {
+    const transcriptEntries = History.splitTranscriptEntries(task.entries);
+    transcriptEntries.conversation.forEach((entry) => {
       const card = document.createElement("article");
       card.className = `agent-entry ${entry.kind || "status"}`;
       const label = document.createElement("small");
@@ -331,11 +351,11 @@
       card.append(label, content);
       transcript.append(card);
     });
-    renderExecutionPanel(task, transcript);
+    renderExecutionPanel(task, transcript, transcriptEntries.details);
     if (state.busy && state.activeTaskId === task.id) {
       const line = document.createElement("div");
       line.className = "agent-status-line running";
-      line.textContent = "Agent 正在规划或处理工作区内容（非流式生成）…";
+      line.textContent = "正在处理任务…";
       const stop = document.createElement("button");
       stop.type = "button";
       stop.className = "agent-stop-button";
@@ -352,17 +372,21 @@
     transcript.scrollTop = transcript.scrollHeight;
   }
 
-  function renderExecutionPanel(task, transcript) {
+  function renderExecutionPanel(task, transcript, detailEntries = []) {
     const execution = task.execution || Execution.emptyExecution();
-    if (!task.plan?.length && !execution.steps.length && !execution.recovery) return;
-    const panel = document.createElement("section");
+    const fallbackEntries = execution.steps.length ? [] : detailEntries.filter((entry) => !(
+      task.plan?.length && entry.kind === "assistant" && /^执行计划（\d+ 步）：/.test(entry.text || "")
+    ));
+    if (!task.plan?.length && !execution.steps.length && !execution.recovery && !fallbackEntries.length) return;
+    const panel = document.createElement("details");
     panel.className = "agent-execution-log";
-    const heading = document.createElement("h3");
-    heading.textContent = "计划与执行记录";
-    panel.append(heading);
+    panel.open = task.status === "failed" || task.status === "paused" || Boolean(execution.recovery);
+    const summary = document.createElement("summary");
+    summary.textContent = "查看执行详情";
+    panel.append(summary);
     const explanation = document.createElement("p");
     explanation.className = "agent-execution-note";
-    explanation.textContent = "上方是模型计划；下方按时间记录实际模型请求和工具结果。待确认项尚未执行。";
+    explanation.textContent = "计划、工具结果与恢复信息。待确认操作仍需在确认卡中批准。";
     panel.append(explanation);
     if (task.plan?.length) {
       const plan = document.createElement("ol");
@@ -414,6 +438,23 @@
         hint.textContent = "恢复只生成了计划，没有执行工具。检查工作区和相关进程后，可在下方发出新的明确指示。";
         panel.append(hint);
       }
+    }
+    if (fallbackEntries.length) {
+      const activity = document.createElement("div");
+      activity.className = "agent-execution-activity";
+      fallbackEntries.forEach((entry) => {
+        const card = document.createElement("article");
+        card.className = `agent-entry ${entry.kind || "status"}`;
+        const label = document.createElement("small");
+        label.className = "agent-entry-label";
+        label.textContent = ({ assistant: "Agent", tool: "工作区工具", status: "状态" })[entry.kind] || "状态";
+        const content = document.createElement("pre");
+        content.className = "agent-entry-content";
+        content.textContent = entry.text || "";
+        card.append(label, content);
+        activity.append(card);
+      });
+      panel.append(activity);
     }
     transcript.append(panel);
   }

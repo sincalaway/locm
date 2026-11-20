@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildMessages } = require("./agent_context.js");
-const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
 
 test("Agent exposes eight independently configurable tools and refuses disabled actions", () => {
   const all = normalizeEnabledTools();
@@ -12,6 +12,15 @@ test("Agent exposes eight independently configurable tools and refuses disabled 
   assert.equal(normalizeEnabledTools(["future_tool"]).length, 8);
   assert.throws(() => parseToolAction({ type: "tool_call", name: "read_file", path: "a.txt" }, ["list_files"]), /已关闭/);
   assert.deepEqual(parseToolAction({ type: "tool_call", name: "read_file", path: "a.txt" }, ["read_file"]), { name: "read_file", path: "a.txt" });
+});
+
+test("master tool switch enables or disables all tools and reports partial selection", () => {
+  const all = TOOL_OPTIONS.map((tool) => tool.id);
+  assert.deepEqual(setAllToolsEnabled(true), all);
+  assert.deepEqual(setAllToolsEnabled(false), []);
+  assert.deepEqual(masterToolSwitchState(all), { checked: true, indeterminate: false });
+  assert.deepEqual(masterToolSwitchState([]), { checked: false, indeterminate: false });
+  assert.deepEqual(masterToolSwitchState(["read_file"]), { checked: false, indeterminate: true });
 });
 
 test("a plan is recorded once and the next model request gets an explicit internal continuation", () => {

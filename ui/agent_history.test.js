@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { removeTaskAndPersist } = require("./agent_history.js");
+const { removeTaskAndPersist, splitTranscriptEntries } = require("./agent_history.js");
 
 function makeState() {
   return {
@@ -71,4 +71,31 @@ test("failed persistence rolls back in-memory history and current task id", () =
   assert.equal(state.tasks, originalTasks);
   assert.deepEqual(state.tasks.map(({ id }) => id), ["task-new", "task-current", "task-old"]);
   assert.equal(state.currentTaskId, "task-current");
+});
+
+test("keeps user requests and final replies visible while moving plan and tool events to details", () => {
+  const entries = [
+    { kind: "user", text: "帮我创建 ewoe 文件夹" },
+    { kind: "assistant", text: "执行计划（1 步）：\n1. 在工作区创建文件夹" },
+    { kind: "status", text: "正在创建工作区文件夹：ewoe" },
+    { kind: "tool", text: "已创建空文件夹：ewoe" },
+    { kind: "assistant", text: "已创建空文件夹：ewoe" },
+  ];
+
+  const result = splitTranscriptEntries(entries);
+  assert.deepEqual(result.conversation, [entries[0], entries[4]]);
+  assert.deepEqual(result.details, [entries[1], entries[2], entries[3]]);
+});
+
+test("keeps legacy non-plan messages available in their original order", () => {
+  const entries = [
+    { kind: "user", text: "读取文件" },
+    { kind: "status", text: "旧版状态消息" },
+    { kind: "assistant", text: "读取结果" },
+  ];
+
+  assert.deepEqual(splitTranscriptEntries(entries), {
+    conversation: [entries[0], entries[2]],
+    details: [entries[1]],
+  });
 });

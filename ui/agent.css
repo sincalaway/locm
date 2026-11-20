@@ -41,7 +41,9 @@
 
 .agent-task-remove:disabled{opacity:.45;cursor:not-allowed}
 
-.agent-tool-settings{flex:0 0 auto;border-bottom:1px solid var(--line);background:var(--surface)}
+.agent-tool-settings-row{display:flex;align-items:flex-start;gap:6px;border-bottom:1px solid var(--line);background:var(--surface)}
+.agent-tool-settings{flex:1 1 auto;min-width:0;background:transparent}
+.agent-tool-master-setting{display:flex;flex:0 0 auto;align-items:center;gap:6px;padding:7px 14px 7px 0;color:var(--ink);font-size:10px;white-space:nowrap;cursor:pointer}
 .agent-tool-settings>summary{display:flex;align-items:center;gap:9px;padding:7px 14px;color:var(--ink);cursor:pointer;list-style:none;font-size:10px}
 .agent-tool-settings>summary::-webkit-details-marker{display:none}
 .agent-tool-settings>summary::after{content:"⌄";margin-left:auto;color:var(--muted)}
@@ -55,8 +57,12 @@
 .agent-tool-switch{position:relative;width:28px;height:16px;flex:0 0 auto;border-radius:12px;background:#a7ada9;transition:background .15s}
 .agent-tool-switch input{position:absolute;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
 .agent-tool-switch:has(input:checked){background:var(--green)}
+.agent-tool-switch:has(input:indeterminate){background:#c49a3a}
 .agent-tool-switch::after{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;content:"";pointer-events:none;transition:transform .15s}
 .agent-tool-switch:has(input:checked)::after{transform:translateX(12px)}
+.agent-tool-switch:has(input:indeterminate)::after{transform:translateX(6px)}
 .agent-tool-switch:has(input:focus-visible){outline:2px solid var(--green);outline-offset:2px}
 .agent-tool-switch:has(input:disabled){opacity:.48;cursor:not-allowed}
-@media(max-width:800px){.agent-tool-settings>summary{padding-right:10px;padding-left:10px}.agent-tool-settings-content{padding-right:10px;padding-left:10px}.agent-tool-switches{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:800px){.agent-tool-settings>summary{padding-right:10px;padding-left:10px}.agent-tool-master-setting{padding-right:10px;font-size:9px}.agent-tool-settings-content{padding-right:10px;padding-left:10px}.agent-tool-switches{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.agent-execution-log>summary{cursor:pointer;list-style:none;color:var(--muted);font-size:10px;font-weight:650}.agent-execution-log>summary::-webkit-details-marker{display:none}.agent-execution-log>summary::after{content:"⌄";float:right;color:var(--muted)}.agent-execution-log[open]>summary::after{content:"⌃"}.agent-execution-activity{display:grid;gap:7px}.agent-execution-activity .agent-entry{margin:0}

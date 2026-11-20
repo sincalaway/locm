@@ -35,6 +35,18 @@
     return all.filter((tool) => supplied.has(tool));
   }
 
+  function setAllToolsEnabled(enabled) {
+    return normalizeEnabledTools(enabled ? TOOL_OPTIONS.map((tool) => tool.id) : []);
+  }
+
+  function masterToolSwitchState(enabledTools) {
+    const enabledCount = normalizeEnabledTools(enabledTools).length;
+    return {
+      checked: enabledCount === TOOL_OPTIONS.length,
+      indeterminate: enabledCount > 0 && enabledCount < TOOL_OPTIONS.length,
+    };
+  }
+
   function appendContinuation(task, instruction) {
     if (!task || !Array.isArray(task.turns)) throw new TypeError("task.turns must be an array");
     task.turns.push({
@@ -351,5 +363,5 @@
     return result;
   }
 
-  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
+  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, normalizeEnabledTools, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
 });

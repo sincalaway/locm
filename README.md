@@ -1,6 +1,12 @@
 # llama-server-launcher-rs
 一个独立的 Rust MVP：保留原有 `llama-server` 配置启动示例，并新增两个彼此独立的本地引擎安装流程。它不是 LocModel 的源码，也不包含 LocModel 品牌资产或官方背书。
 
+## v0.2.13 更新
+
+- Agent 不按模型名称限制本地模型选择；会把同一套工作区工具以 OpenAI `tools` schema 发送给当前选中的本机模型，并在 llama-server 帮助确认支持时启用 `--jinja`。若模型不能原生调用工具，可使用通用 JSON 协议回退；旧服务端拒绝工具字段时也会回退。不同模型对工具协议的遵循能力仍有差异。
+- Agent 可识别标准 OpenAI `tool_calls`、llama.cpp 紧凑调用和旧版 `function_call` 响应；MiniCPM5 的 `<function>/<param>` XML 是额外兼容格式，并非模型限制。只接受已开放工具、声明字段与正确参数类型，并限制每轮一个动作。所有调用仍进入现有工作区路径校验、审批卡与系统原生确认流程。
+- 验证：JavaScript 回归 51 项、桌面 Rust 90 项（其中工具协议 6 项）通过；默认 Rust 测试 23 项通过。发布构建包含 Linux x86_64 原生包与 Windows x64 MSVC/NSIS、GNU 交叉构建包；Windows 包由 Linux 交叉构建且未代码签名；未在真实 Windows 设备启动验证，也未在用户电脑上对任意模型进行端到端测试。安装包不含引擎或模型权重。
+
 ## v0.2.12 更新
 
 - 修复 Windows NSIS 安装器错误打包命令行程序的问题，确保选择桌面 GUI 目标。历史 v0.2.11 公开安装器错误打包了 CLI，不建议使用；其版本标签保留。

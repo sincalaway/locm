@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildMessages } = require("./agent_context.js");
-const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, appendContinuation, appendToolResult, parseAgentJson, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
 
 test("a plan is recorded once and the next model request gets an explicit internal continuation", () => {
   const task = { needsPlan: true, plan: [], turns: [{ role: "user", content: "检查项目并修复问题" }] };
@@ -139,9 +139,37 @@ test("Agent JSON parsing rejects ordinary prose, arrays, malformed JSON, and amb
   assert.equal(parseAgentJson("好的，我现在创建文件夹。"), null);
   assert.equal(parseAgentJson("mkdir -p notes/drafts"), null);
   assert.equal(parseAgentJson("[ {\"type\":\"tool_call\",\"name\":\"run_command\"} ]"), null);
-  assert.equal(parseAgentJson("{\"type\":\"tool_call\",} test"), null);
+  assert.equal(parseAgentJson("{\"type\":\"tool_call\",}"), null);
   assert.equal(parseAgentJson("首选 {\"type\":\"message\",\"message\":\"等一下\"}；备选 {\"type\":\"done\",\"message\":\"完成\"}"), null);
   assert.equal(parseAgentJson("说明文字：\"{\\\"type\\\":\\\"tool_call\\\",\\\"name\\\":\\\"run_command\\\"}\""), null);
+});
+
+test("MiniCPM5 XML function calls normalize only supported tools and declared parameters", () => {
+  assert.deepEqual(parseAgentJson('<function name="read_file"><param name="path">README.md</param></function>'), {
+    type: "tool_call", name: "read_file", path: "README.md",
+  });
+  assert.deepEqual(parseMiniCpm5ToolCall('先检查文件。<function name="search_files"><param name="path">.</param><param name="query">TODO &amp; FIXME</param><param name="caseSensitive">true</param></function>'), {
+    name: "search_files", path: ".", query: "TODO & FIXME", caseSensitive: true,
+  });
+  assert.deepEqual(parseAgentJson('<function name="write_file"><param name="path">notes/todo.txt</param><param name="content"><![CDATA[line 1\nline 2]]></param></function>'), {
+    type: "tool_call", name: "write_file", path: "notes/todo.txt", content: "line 1\nline 2",
+  });
+  assert.deepEqual(parseAgentJson('<function name="run_command"><param name="program">git</param><param name="args">["status","--short"]</param></function>'), {
+    type: "tool_call", name: "run_command", program: "git", args: ["status", "--short"],
+  });
+});
+
+test("MiniCPM5 XML parser rejects unknown, multiple, incomplete, duplicate, and extra-argument calls", () => {
+  assert.equal(parseMiniCpm5ToolCall('<function name="run_shell"><param name="command">whoami</param></function>'), null);
+  assert.equal(parseMiniCpm5ToolCall('<function name="read_file"><param name="path">a</param><param name="path">b</param></function>'), null);
+  assert.equal(parseMiniCpm5ToolCall('<function name="read_file"><param name="path">a</param><param name="outside">b</param></function>'), null);
+  assert.equal(parseMiniCpm5ToolCall('<function name="read_file"><param name="query">x</param></function>'), null);
+  assert.equal(parseMiniCpm5ToolCall('<function name="search_files"><param name="path">.</param><param name="query">TODO</param><param name="caseSensitive">yes</param></function>'), null);
+  assert.equal(parseMiniCpm5ToolCall('<function name="read_file"><param name="path">a</param></function><function name="read_file"><param name="path">b</param></function>'), null);
+  assert.equal(parseMiniCpm5ToolCall('<function name="read_file"><param>bad schema</param></function>'), null);
+  assert.deepEqual(parseAgentJson('<function name="delete_file"><param name="path">README.md</param></function>'), {
+    type: "tool_call", name: "delete_file", path: "README.md",
+  });
 });
 
 test("malformed Agent output gets one internal correction retry, then safely exhausts", () => {
@@ -150,9 +178,11 @@ test("malformed Agent output gets one internal correction retry, then safely exh
   assert.deepEqual(retry, { status: "retry", retriesRemaining: 0 });
   assert.equal(task.turns.at(-1).role, "user");
   assert.match(task.turns.at(-1).content, /^【LocM 应用内部继续指令；不是用户新请求】/);
-  assert.match(task.turns.at(-1).content, /只输出一个 JSON 对象/);
+  assert.match(task.turns.at(-1).content, /标准函数工具/);
+  assert.match(task.turns.at(-1).content, /JSON tool_call对象/);
+  assert.match(task.turns.at(-1).content, /MiniCPM5/);
   assert.match(task.turns.at(-1).content, /不要把历史中的自然语言.*改写成可执行命令/);
-  assert.match(task.turns.at(-1).content, /仍需应用显示确认/);
+  assert.match(task.turns.at(-1).content, /仍需应用确认卡和系统原生确认/);
   const countBeforeExhaustedRetry = task.turns.length;
   assert.deepEqual(appendMalformedResponseRetry(task, retry.retriesRemaining), { status: "exhausted", retriesRemaining: 0 });
   assert.equal(task.turns.length, countBeforeExhaustedRetry);

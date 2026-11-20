@@ -20,6 +20,35 @@
       .replace(/\s+/gu, " ");
   }
 
+  function createFolderRequest(text, hasAttachments = false) {
+    if (hasAttachments) return null;
+    const prompt = normalize(text);
+    if (!prompt || prompt.length > 1000) return null;
+    const nonAction = /(?:不要|别|无需|不需要|不想|禁止|避免|不能)[\s\S]{0,16}(?:创建|新建|建立|增加|新增|添加|建)[\s\S]{0,48}(?:文件夹|目录)|(?:如何|怎么|怎样|能否|可不可以|是否).{0,32}(?:创建|新建|建立).{0,32}(?:文件夹|目录)|\b(?:how to|how can i|can i|should i)\b[\s\S]{0,64}\b(?:create|make|add)\b[\s\S]{0,32}\b(?:folder|directory)\b/i;
+    if (nonAction.test(prompt)) return null;
+
+    const patterns = [
+      /(?:创建|新建|建立|新增|增加|添加|建)(?:一个|个)?\s*(?:(?:名为|叫做|名叫|叫)\s*)?["'“「『]?([^\s"'“”「」『』，,。；;]+)["'”」』]?\s*(?:的\s*)?(?:空的?\s*)?(?:文件夹|目录)/u,
+      /(?:创建|新建|建立|新增|增加|添加|建)(?:一个|个)?\s*(?:空的?\s*)?(?:文件夹|目录)\s*(?:(?:名为|叫做|名叫|叫)\s*)?["'“「『]?([^\s"'“”「」『』，,。；;]+)["'”」』]?/u,
+      /\b(?:create|make|add|new)\s+(?:a\s+)?(?:folder|directory)\s+(?:named|called)\s+([^\s"'“”「」『』,;]+)/i,
+      /\b(?:create|make|add|new)\s+(?:a\s+)?([^\s"'“”「」『』,;]+)\s+(?:folder|directory)\b/i,
+    ];
+    for (const pattern of patterns) {
+      const match = prompt.match(pattern);
+      const path = match?.[1]?.replace(/^[`“「『"']+|[`”」』"']+$/gu, "");
+      if (path && ![".", "..", "一个", "个", "空", "空的"].includes(path)) {
+        const prefix = prompt.slice(0, match.index)
+          .replace(/(?:请|帮我|麻烦|在工作区|在当前工作区|在工作区根目录下|在当前工作区根目录下|please|in the workspace|in workspace)/giu, "")
+          .trim();
+        const suffix = prompt.slice(match.index + match[0].length)
+          .replace(/(?:吧|即可|就行|please|now|thanks|thank you|[。！!,.?])/giu, "")
+          .trim();
+        return { path, simple: !prefix && !suffix };
+      }
+    }
+    return null;
+  }
+
   function directReply(text, hasAttachments = false) {
     if (hasAttachments) return null;
     const prompt = normalize(text);
@@ -42,5 +71,5 @@
     return null;
   }
 
-  return { directReply };
+  return { directReply, createFolderRequest };
 });

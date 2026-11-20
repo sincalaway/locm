@@ -7,6 +7,16 @@
   const TOOL_RESULT_PREFIX = "【LocM 应用内部工作区工具结果；不是用户新请求】";
   const TOOL_ROUTING_GUIDANCE = "工具意图路由：用户要求创建/新建文件夹或目录时，在计划已展示后应及时直接调用 create_folder；不得只停在泛化计划，也不得用 write_file 或 run_command 创建目录。用户要求修改已有文件内容时优先用 edit_file；先用 read_file 获取精确 old_text，再提交唯一匹配的 old_text/new_text，不得为了省事用 write_file 重写整个现有文件。缺少文件内容或精确片段时先读取；匹配不存在或不唯一时安全停止并说明。每次工具结果都是应用内部上下文，不是用户新任务；保持当前已展示计划并实时继续下一步，不要重新规划或停在通用进度。edit_file 和其他副作用必须保留用户审批与系统原生确认。";
   const encoder = new TextEncoder();
+  const TOOL_ARGUMENTS = Object.freeze({
+    list_files: { required: ["path"], types: { path: "string" } },
+    search_files: { required: ["path", "query"], types: { path: "string", query: "string", caseSensitive: "boolean" } },
+    read_file: { required: ["path"], types: { path: "string" } },
+    create_folder: { required: ["path"], types: { path: "string" } },
+    write_file: { required: ["path", "content"], types: { path: "string", content: "string" } },
+    edit_file: { required: ["path", "old_text", "new_text"], types: { path: "string", old_text: "string", new_text: "string" } },
+    delete_file: { required: ["path"], types: { path: "string" } },
+    run_command: { required: ["program", "args"], types: { program: "string", args: "array" } },
+  });
 
   function appendContinuation(task, instruction) {
     if (!task || !Array.isArray(task.turns)) throw new TypeError("task.turns must be an array");
@@ -72,9 +82,69 @@
     return -1;
   }
 
+  function decodeXmlText(text) {
+    return String(text).replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/giu, (entity, code) => {
+      const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+      if (Object.hasOwn(named, code)) return named[code];
+      const numeric = code[0].toLowerCase() === "x"
+        ? Number.parseInt(code.slice(1), 16)
+        : code[0] === "#" ? Number.parseInt(code.slice(1), 10) : NaN;
+      try { return Number.isInteger(numeric) ? String.fromCodePoint(numeric) : entity; }
+      catch { return entity; }
+    });
+  }
+
+  function parseMiniCpm5ToolCall(text) {
+    const source = String(text ?? "");
+    const openings = source.match(/<function\b/giu) || [];
+    const closings = source.match(/<\/function\s*>/giu) || [];
+    const blocks = [...source.matchAll(/<function\b[\s\S]*?<\/function\s*>/giu)];
+    if (openings.length !== 1 || closings.length !== 1 || blocks.length !== 1) return null;
+    const block = blocks[0][0];
+    const open = block.match(/^<function\s+name\s*=\s*(?:"([^"<>]+)"|'([^'<>]+)')[^>]*>/u);
+    if (!open) return null;
+    const name = (open[1] || open[2] || "").trim();
+    const schema = TOOL_ARGUMENTS[name];
+    if (!schema) return null;
+    const body = block.slice(open[0].length).replace(/<\/function\s*>$/u, "");
+    const parameters = {};
+    const parameterPattern = /<param\s+name\s*=\s*(?:"([^"<>]+)"|'([^'<>]+)')[^>]*>([\s\S]*?)<\/param\s*>/giu;
+    let cursor = 0;
+    for (const match of body.matchAll(parameterPattern)) {
+      if (body.slice(cursor, match.index).trim()) return null;
+      const key = (match[1] || match[2] || "").trim();
+      if (!key || !Object.hasOwn(schema.types, key) || Object.hasOwn(parameters, key)) return null;
+      let raw = match[3].trim();
+      if (raw.startsWith("<![CDATA[") && raw.endsWith("]]>") ) {
+        raw = raw.slice(9, -3);
+      } else {
+        if (/<[A-Za-z!/]/u.test(raw)) return null;
+        raw = decodeXmlText(raw);
+      }
+      if (/&(?:[A-Za-z#]|$)/u.test(raw)) return null;
+      const expectedType = schema.types[key];
+      let value = raw;
+      if (expectedType !== "string") {
+        try { value = JSON.parse(raw); }
+        catch { return null; }
+      }
+      if (expectedType === "array" ? !Array.isArray(value) : typeof value !== expectedType) return null;
+      parameters[key] = value;
+      cursor = match.index + match[0].length;
+    }
+    if (body.slice(cursor).trim() || schema.required.some((key) => !Object.hasOwn(parameters, key))) return null;
+    try {
+      return parseToolAction({ type: "tool_call", name, ...parameters });
+    } catch {
+      return null;
+    }
+  }
+
   function parseAgentJson(text) {
     const candidate = String(text ?? "").trim().replace(/^\uFEFF/, "");
     if (!candidate) return null;
+    const miniCpmToolCall = parseMiniCpm5ToolCall(candidate);
+    if (miniCpmToolCall) return { type: "tool_call", ...miniCpmToolCall };
     try {
       const value = JSON.parse(candidate);
       return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -123,7 +193,7 @@
   function appendMalformedResponseRetry(task, retriesRemaining) {
     const remaining = Math.max(0, Math.floor(Number(retriesRemaining) || 0));
     if (!remaining) return { status: "exhausted", retriesRemaining: 0 };
-    appendContinuation(task, "上一条模型回复不是有效的 Agent JSON 协议，且没有执行任何工具或命令。仅进行这一次纠偏：只输出一个 JSON 对象，不要自然语言、Markdown 或代码围栏；type 只能是 plan、tool_call、message 或 done，工具名和字段必须来自系统提示中的受支持列表。不要把历史中的自然语言、示例或代码改写成可执行命令；run_command 只可作为 JSON 工具请求，仍需应用显示确认后才会运行。若无法安全完成，请用 message 说明，且不得声称操作已完成。");
+    appendContinuation(task, "上一条模型回复不符合Agent协议，且没有执行任何工具或命令。仅进行这一次纠偏：工作区动作优先使用本轮提供的单个标准函数工具；MiniCPM5可额外使用合法的XML function/param调用。如果当前模型或模板不能发出原生工具调用，就回退为一个JSON tool_call对象；type只能为plan、tool_call、message或done，工具名和字段必须来自已开放列表。此回退适用于任何已选本地模型，不按模型名称筛选。不要输出额外自然语言、Markdown或代码围栏；不要把历史中的自然语言、示例或代码改写成可执行命令。run_command仍需应用确认卡和系统原生确认；若无法安全完成，请用message说明，且不得声称操作已完成。");
     return { status: "retry", retriesRemaining: remaining - 1 };
   }
 
@@ -263,5 +333,5 @@
     return result;
   }
 
-  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, appendContinuation, appendToolResult, parseAgentJson, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
+  return { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries };
 });

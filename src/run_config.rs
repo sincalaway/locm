@@ -40,6 +40,7 @@ pub struct ServerCapabilities {
     pub cache_type_v: bool,
     pub n_gpu_layers: bool,
     pub reasoning: bool,
+    pub jinja: bool,
 }
 
 fn has_option(help: &str, option: &str) -> bool {
@@ -67,6 +68,7 @@ pub fn parse_capabilities(help: &str) -> ServerCapabilities {
         cache_type_v: has_option(help, "--cache-type-v"),
         n_gpu_layers: has_option(help, "--n-gpu-layers"),
         reasoning: has_option(help, "--reasoning"),
+        jinja: has_option(help, "--jinja"),
     }
 }
 
@@ -119,6 +121,9 @@ pub fn build_server_args(
     ];
     if capabilities.n_gpu_layers {
         args.extend([OsString::from("--n-gpu-layers"), OsString::from("0")]);
+    }
+    if capabilities.jinja {
+        args.push(OsString::from("--jinja"));
     }
 
     match preferences.context.as_str() {
@@ -207,7 +212,7 @@ mod tests {
     use std::{fs, process::Command};
     use tempfile::tempdir;
 
-    const FULL_HELP: &str = "--model FNAME\n--host HOST\n--port PORT\n-c, --ctx-size N\n-fa, --flash-attn [on|off|auto]\n-ctk, --cache-type-k TYPE\n-ctv, --cache-type-v TYPE\n-ngl, --n-gpu-layers N\n-rea, --reasoning [on|off|auto]\n";
+    const FULL_HELP: &str = "--model FNAME\n--host HOST\n--port PORT\n-c, --ctx-size N\n-fa, --flash-attn [on|off|auto]\n-ctk, --cache-type-k TYPE\n-ctv, --cache-type-v TYPE\n-ngl, --n-gpu-layers N\n-rea, --reasoning [on|off|auto]\n-j, --jinja\n";
 
     #[test]
     fn only_exact_help_options_are_detected() {
@@ -215,10 +220,12 @@ mod tests {
         assert!(capabilities.host && capabilities.port && capabilities.ctx_size);
         assert!(capabilities.flash_attention && capabilities.cache_type_k);
         assert!(capabilities.cache_type_v && capabilities.n_gpu_layers && capabilities.reasoning);
+        assert!(capabilities.jinja);
         let missing =
             parse_capabilities("--host HOST\n--port PORT\n--ctx-size N\n--flash-attention on\n");
         assert!(!missing.flash_attention);
         assert!(!missing.cache_type_k && !missing.cache_type_v);
+        assert!(!missing.jinja);
         let equals_form = parse_capabilities(
             "--model=FILE\n--host=HOST\n--port=PORT\n--ctx-size=SIZE\n--flash-attn=MODE\n--cache-type-k=TYPE\n--cache-type-v=TYPE\n",
         );
@@ -257,6 +264,7 @@ mod tests {
                 "8666",
                 "--n-gpu-layers",
                 "0",
+                "--jinja",
                 "--ctx-size",
                 "32768",
                 "--flash-attn",

@@ -31,6 +31,8 @@
   10. 完成：{"type":"done","message":"总结已完成的工作、改动文件和未完成事项"}。
   明确创建文件夹的请求：展示计划后及时调用 create_folder，不要仅停在泛化计划，也不要用 shell 或 write_file 创建目录。明确修改已有文件的请求：先读文件，优先以精确 old_text/new_text 调用 edit_file；只有明确要新建文件或整文件替换时才用 write_file。每次工具结果都是内部续接；按原计划实时继续下一步，不能重新规划或把工具结果当成新任务。工具每次只执行一个动作。需要运行命令时只提出与任务直接相关的命令。不要声称执行了实际未完成的操作。`;
 
+  const TOOL_CALLING_RULE = "高优先级协议修正（与前文冲突时以此为准）：Agent不按模型名称限制用户可选的本地模型；本轮请求会对当前选中的模型提供标准函数工具定义。模型支持时优先用标准函数调用；如果当前模型/模板无法发出原生工具调用，或服务端拒绝工具字段，就用系统提示中的单个JSON tool_call作为通用兼容回退。MiniCPM5可能在content中返回单个XML调用（<function name=\"read_file\"><param name=\"path\">相对路径</param></function>），这是额外兼容格式，不是模型选择限制。计划、message、done仍输出单个JSON对象。只允许一次一个已提供的工具调用；不得绕过工作区路径限制、用户审批卡或系统原生确认。";
+
   const state = {
     tasks: loadTasks(),
     workspace: loadWorkspace(),
@@ -529,12 +531,13 @@
       const preferredTools = Protocol.preferredToolsForUserRequest(latestUserGoal?.content || "");
       const routeHint = preferredTools.length ? `\n\n本轮用户目标的专用工具路由：${preferredTools.join("、")}。展示计划后应按计划及时调用这些工具；每个工具结果返回后继续当前计划。` : "";
       const effectivePrompt = systemPrompt === SYSTEM_PROMPT
-        ? `${systemPrompt}\n\n${Protocol.TOOL_ROUTING_GUIDANCE}${routeHint}\n\n${CONTINUATION_RULE}`
+        ? `${systemPrompt}\n\n${TOOL_CALLING_RULE}\n\n${Protocol.TOOL_ROUTING_GUIDANCE}${routeHint}\n\n${CONTINUATION_RULE}`
         : systemPrompt;
       const raw = await invoke("chat_complete", {
         messages: LocmAgentContext.buildMessages(effectivePrompt, task.turns, budget.inputBytes),
         temperature: 0.2,
         maxTokens: budget.replyTokens,
+        agentTools: true,
       });
       Execution.updateStep(task, step.id, "completed", truncate(raw, 8000));
       persist();
@@ -696,13 +699,13 @@
     return "pause";
   }
 
-  async function runAgent(task) {
+  async function runAgent(task, directFolderRequest = null) {
     if (state.busy || task.pendingAction) return;
     if (Execution.toolsBlocked(task)) {
       notify("该任务处于中断恢复状态；请使用恢复按钮只生成计划，或在计划生成后发出新的明确指示。", true);
       return;
     }
-    if (!state.runtime.running) {
+    if (!state.runtime.running && !directFolderRequest) {
       notify("本地模型尚未启动。请先前往“运行”页面启动一个模型。", true);
       return;
     }
@@ -717,6 +720,38 @@
     persist();
     render();
     try {
+      if (directFolderRequest && task.needsPlan) {
+        const steps = [`在当前所选工作区内创建文件夹：${directFolderRequest.path}`];
+        task.plan = steps;
+        task.needsPlan = false;
+        task.turns.push({ role: "assistant", content: JSON.stringify({ type: "plan", steps }) });
+        addEntry(task, "assistant", `执行计划（1 步）：\n1. ${steps[0]}\n\n这是明确的单一步骤文件夹请求；将直接使用 LocM 本机工作区工具，不依赖模型生成工具调用。`);
+        render();
+        const action = { type: "tool_call", name: "create_folder", path: directFolderRequest.path };
+        rememberModelAction(task, JSON.stringify(action), action);
+        const outcome = await executeToolAction(task, action);
+        if (outcome !== "continue") return;
+        if (!directFolderRequest.simple) {
+          Protocol.appendContinuation(task, `应用已直接调用 create_folder 并处理路径“${directFolderRequest.path}”；请以工作区工具结果为准，不要重复创建此目录。继续当前用户请求中尚未完成的其他要求。`);
+        }
+        if (directFolderRequest.simple) {
+          const result = [...task.entries].reverse().find((entry) => entry.kind === "tool")?.text || `已处理文件夹：${directFolderRequest.path}`;
+          const message = result.includes("已创建空文件夹")
+            ? result
+            : result.includes("文件夹已存在")
+              ? result
+              : `文件夹操作完成：${directFolderRequest.path}`;
+          task.turns.push({ role: "assistant", content: JSON.stringify({ type: "done", message }) });
+          addEntry(task, "assistant", message);
+          task.status = "completed";
+          return;
+        }
+        if (!state.runtime.running) {
+          task.status = "paused";
+          addEntry(task, "status", "文件夹已创建；此请求还包含其他工作，但本地模型尚未启动，未继续处理其余要求。启动模型后可发送新的明确指示。");
+          return;
+        }
+      }
       let duplicatePlanRetriesRemaining = 1;
       let malformedProtocolRetriesRemaining = 1;
       for (let step = 0; step < 12; step++) {
@@ -1139,7 +1174,8 @@
       return;
     }
     if (!state.workspace) { notify("请先选择工作文件夹。", true); return; }
-    if (!state.runtime.running) { notify("请先在“运行”页面启动一个本地模型。", true); return; }
+    const directFolderRequest = LocmAgentIntent.createFolderRequest(prompt, state.attachments.length > 0);
+    if (!state.runtime.running && !directFolderRequest?.simple) { notify("请先在“运行”页面启动一个本地模型。", true); return; }
     if (!task) task = createTask(prompt || state.attachments[0]?.name || "新任务", userText);
     else {
       if (task.workspace !== state.workspace) {
@@ -1162,7 +1198,7 @@
     $("#agent-input").value = "";
     state.attachments = [];
     persist();
-    await runAgent(task);
+    await runAgent(task, directFolderRequest);
   }
 
   async function chooseWorkspace() {

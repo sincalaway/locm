@@ -126,6 +126,15 @@ test("Agent JSON parsing accepts one strict or fenced protocol object and handle
   assert.deepEqual(parseAgentJson(`我会继续。 ${JSON.stringify(action)} 已准备。`), action);
 });
 
+test("Agent JSON parsing repairs only the observed incomplete plan suffix", () => {
+  const malformed = '{"type":"plan","steps":["检查工作区文件内容","询问是否需要处理现有文件内容","确认任务优先级"})';
+  const expected = { type: "plan", steps: ["检查工作区文件内容", "询问是否需要处理现有文件内容", "确认任务优先级"] };
+
+  assert.deepEqual(parseAgentJson(malformed), expected);
+  assert.deepEqual(parseAgentJson(`\`\`\`json\n${malformed}\n\`\`\``), expected);
+  assert.equal(parseAgentJson('{"type":"tool_call","name":"list_files","path":"."'), null);
+});
+
 test("Agent JSON parsing rejects ordinary prose, arrays, malformed JSON, and ambiguous objects", () => {
   assert.equal(parseAgentJson("好的，我现在创建文件夹。"), null);
   assert.equal(parseAgentJson("mkdir -p notes/drafts"), null);

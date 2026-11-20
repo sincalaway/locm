@@ -25,7 +25,7 @@ jobs:
         run: cargo test --locked --target x86_64-pc-windows-msvc
 
       - name: Build release executable
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+        run: cargo build --release --locked --bin llama-server-launcher-rs --target x86_64-pc-windows-msvc
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v4

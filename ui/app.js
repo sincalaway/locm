@@ -65,6 +65,7 @@
   const escapeText = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "\'": "&#39;" }[character]));
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  window.LocmAppVersion?.updateFooterVersion($(".version"), () => tauri.app.getVersion());
 
   function showToast(message, type = "success") {
     const box = $("#toast");

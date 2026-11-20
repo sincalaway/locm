@@ -351,6 +351,303 @@ struct ChatChoice {
     message: ChatMessage,
 }
 
+fn agent_tool_definitions(enabled_tools: &[String]) -> serde_json::Value {
+    let all = serde_json::json!([
+        { "type": "function", "function": { "name": "list_files", "description": "列出所选工作区内的文件和子目录；path为相对路径，使用.表示工作区根目录。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "search_files", "description": "在所选工作区内搜索UTF-8文本；只能使用工作区内的相对目录路径。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "query": { "type": "string" }, "caseSensitive": { "type": "boolean" } }, "required": ["path", "query"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "read_file", "description": "读取所选工作区内的UTF-8文本文件；只能使用相对路径。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "create_folder", "description": "在所选工作区内创建空文件夹；只接受相对路径，不通过shell。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "write_file", "description": "在所选工作区内新建文件；若目标已存在，应用会先向用户请求覆盖确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "edit_file", "description": "以唯一精确old_text/new_text片段修改所选工作区内的现有文件；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "old_text": { "type": "string" }, "new_text": { "type": "string" } }, "required": ["path", "old_text", "new_text"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "delete_file", "description": "删除所选工作区内的普通文件；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "run_command", "description": "在所选工作区作为当前目录运行一个程序；必须提供程序名和argv参数，不使用shell；应用会先请求用户确认。", "parameters": { "type": "object", "properties": { "program": { "type": "string" }, "args": { "type": "array", "items": { "type": "string" } } }, "required": ["program", "args"], "additionalProperties": false } } }
+    ]);
+    serde_json::Value::Array(
+        all.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|tool| {
+                tool.pointer("/function/name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|name| enabled_tools.iter().any(|enabled| enabled == name))
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
+fn agent_tool_fields(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    match name {
+        "list_files" | "read_file" | "create_folder" | "delete_file" => {
+            Some((&["path"], &["path"]))
+        }
+        "search_files" => Some((&["path", "query"], &["path", "query", "caseSensitive"])),
+        "write_file" => Some((&["path", "content"], &["path", "content"])),
+        "edit_file" => Some((
+            &["path", "old_text", "new_text"],
+            &["path", "old_text", "new_text"],
+        )),
+        "run_command" => Some((&["program", "args"], &["program", "args"])),
+        _ => None,
+    }
+}
+
+fn normalize_agent_tool_call(
+    call: &serde_json::Value,
+    enabled_tools: &[String],
+) -> Result<String, String> {
+    let function = call.get("function").unwrap_or(call);
+    let name = function
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "本机模型返回的工具调用缺少函数名".to_string())?;
+    if !enabled_tools.iter().any(|enabled| enabled == name) {
+        return Err(format!(
+            "本机模型调用了已关闭的工具：{name}；此次没有执行工具"
+        ));
+    }
+    let (required, allowed) =
+        agent_tool_fields(name).ok_or_else(|| format!("本机模型请求了未开放的工具：{name}"))?;
+    let raw_arguments = function
+        .get("arguments")
+        .or_else(|| function.get("parameters"))
+        .ok_or_else(|| "本机模型返回的工具调用缺少参数".to_string())?;
+    let arguments = match raw_arguments {
+        serde_json::Value::String(serialized) => serde_json::from_str(serialized)
+            .map_err(|error| format!("本机模型工具参数不是有效JSON：{error}"))?,
+        value => value.clone(),
+    };
+    let arguments = arguments
+        .as_object()
+        .ok_or_else(|| "本机模型工具参数必须是JSON对象".to_string())?;
+    if arguments.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("本机模型工具参数包含未定义字段；工具尚未执行".to_string());
+    }
+    if required.iter().any(|key| !arguments.contains_key(*key)) {
+        return Err("本机模型工具参数缺少必填字段；工具尚未执行".to_string());
+    }
+    let mut action = serde_json::Map::new();
+    action.insert("type".to_string(), serde_json::json!("tool_call"));
+    action.insert("name".to_string(), serde_json::json!(name));
+    for (key, value) in arguments {
+        action.insert(key.clone(), value.clone());
+    }
+    serde_json::to_string(&serde_json::Value::Object(action))
+        .map_err(|error| format!("无法规范化本机模型工具调用：{error}"))
+}
+
+fn normalize_agent_completion(
+    response: &serde_json::Value,
+    enabled_tools: &[String],
+) -> Result<String, String> {
+    let message = response
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .ok_or_else(|| "本机模型未返回有效的completion message".to_string())?;
+    if let Some(calls) = message
+        .get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .filter(|calls| !calls.is_empty())
+    {
+        if calls.len() != 1 {
+            return Err("本机模型一次必须只调用一个工具；此次没有执行工具".to_string());
+        }
+        return normalize_agent_tool_call(&calls[0], enabled_tools);
+    }
+    if let Some(function_call) = message.get("function_call") {
+        return normalize_agent_tool_call(function_call, enabled_tools);
+    }
+    message
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "本机模型既未返回文本，也未返回工具调用".to_string())
+}
+
+fn build_agent_chat_payload(
+    messages: &[ChatMessage],
+    temperature: f32,
+    max_tokens: u32,
+    enabled_tools: &[String],
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": "local-model",
+        "messages": messages,
+        "temperature": temperature.clamp(0.0, 2.0),
+        "max_tokens": max_tokens,
+        "stream": false
+    });
+    if !enabled_tools.is_empty() {
+        payload["tools"] = agent_tool_definitions(enabled_tools);
+        payload["tool_choice"] = serde_json::json!("auto");
+        payload["parallel_tool_calls"] = serde_json::json!(false);
+    }
+    payload
+}
+
+#[cfg(test)]
+mod agent_tool_protocol_tests {
+    use super::{
+        agent_tool_definitions, build_agent_chat_payload, normalize_agent_completion, ChatMessage,
+    };
+    use serde_json::{json, Value};
+
+    fn all_tools() -> Vec<String> {
+        [
+            "list_files",
+            "search_files",
+            "read_file",
+            "create_folder",
+            "write_file",
+            "edit_file",
+            "delete_file",
+            "run_command",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
+    fn normalized_action(response: Value) -> Value {
+        serde_json::from_str(&normalize_agent_completion(&response, &all_tools()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn normalizes_openai_tool_calls_with_json_string_arguments() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": { "name": "read_file", "arguments": "{\"path\":\"README.md\"}" }
+                    }]
+                }
+            }]
+        });
+        assert_eq!(
+            normalized_action(response),
+            json!({ "type": "tool_call", "name": "read_file", "path": "README.md" })
+        );
+    }
+
+    #[test]
+    fn normalizes_llama_cpp_compact_tool_calls_with_object_arguments() {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{ "name": "search_files", "arguments": { "path": ".", "query": "TODO", "caseSensitive": false } }]
+                }
+            }]
+        });
+        assert_eq!(
+            normalized_action(response),
+            json!({ "type": "tool_call", "name": "search_files", "path": ".", "query": "TODO", "caseSensitive": false })
+        );
+    }
+
+    #[test]
+    fn accepts_legacy_function_call_and_empty_tool_calls_with_text() {
+        let legacy = json!({ "choices": [{ "message": { "function_call": {
+            "name": "create_folder", "arguments": "{\"path\":\"notes\"}"
+        } } }] });
+        assert_eq!(
+            normalized_action(legacy),
+            json!({ "type": "tool_call", "name": "create_folder", "path": "notes" })
+        );
+        let text = json!({ "choices": [{ "message": {
+            "content": "{\"type\":\"done\",\"message\":\"ok\"}", "tool_calls": []
+        } }] });
+        assert_eq!(
+            normalize_agent_completion(&text, &all_tools()).unwrap(),
+            "{\"type\":\"done\",\"message\":\"ok\"}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_multiple_incomplete_and_extra_argument_tool_calls() {
+        let call = |name: &str, arguments: Value| json!({ "choices": [{ "message": { "tool_calls": [{ "name": name, "arguments": arguments }] } }] });
+        assert!(normalize_agent_completion(
+            &call("run_shell", json!({ "command": "whoami" })),
+            &all_tools()
+        )
+        .is_err());
+        assert!(normalize_agent_completion(&call("read_file", json!({})), &all_tools()).is_err());
+        assert!(normalize_agent_completion(
+            &call("read_file", json!({ "path": "a", "outside": true })),
+            &all_tools()
+        )
+        .is_err());
+        let multiple = json!({ "choices": [{ "message": { "tool_calls": [
+            { "name": "read_file", "arguments": { "path": "a" } },
+            { "name": "read_file", "arguments": { "path": "b" } }
+        ] } }] });
+        assert!(normalize_agent_completion(&multiple, &all_tools())
+            .unwrap_err()
+            .contains("只调用一个工具"));
+    }
+
+    #[test]
+    fn exposes_all_workspace_tools_and_keeps_plain_text_responses() {
+        let enabled = all_tools();
+        let tools = agent_tool_definitions(&enabled);
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "list_files",
+                "search_files",
+                "read_file",
+                "create_folder",
+                "write_file",
+                "edit_file",
+                "delete_file",
+                "run_command"
+            ]
+        );
+        assert_eq!(
+            normalize_agent_completion(&json!({ "choices": [{ "message": { "content": "{\"type\":\"done\",\"message\":\"ok\"}" } }] }), &enabled).unwrap(),
+            "{\"type\":\"done\",\"message\":\"ok\"}"
+        );
+    }
+
+    #[test]
+    fn sends_tools_for_the_current_local_model_and_supports_plain_protocol_fallback() {
+        let messages = [
+            ChatMessage {
+                role: "system".into(),
+                content: "Agent system".into(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "Inspect the workspace".into(),
+            },
+        ];
+        let enabled = vec!["read_file".to_string()];
+        let payload = build_agent_chat_payload(&messages, 0.2, 2048, &enabled);
+        assert_eq!(payload["model"], "local-model");
+        assert_eq!(payload["tool_choice"], "auto");
+        assert_eq!(payload["parallel_tool_calls"], false);
+        assert_eq!(payload["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(payload["messages"].as_array().unwrap().len(), 2);
+
+        let fallback = build_agent_chat_payload(&messages, 0.2, 2048, &[]);
+        assert!(fallback.get("tools").is_none());
+        assert!(fallback.get("tool_choice").is_none());
+        let disabled_response = json!({ "choices": [{ "message": { "tool_calls": [{ "name": "delete_file", "arguments": { "path": "a.txt" } }] } }] });
+        assert!(normalize_agent_completion(&disabled_response, &enabled).is_err());
+    }
+}
+
 const CHAT_STREAM_EVENT: &str = "chat-stream";
 const MAX_CHAT_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_CHAT_SSE_EVENT_BYTES: usize = 128 * 1024;
@@ -1915,6 +2212,7 @@ async fn chat_complete(
     messages: Vec<ChatMessage>,
     temperature: f32,
     max_tokens: u32,
+    agent_enabled_tools: Vec<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if !(1..=4096).contains(&max_tokens) {
@@ -1953,29 +2251,47 @@ async fn chat_complete(
             "http://{}:{}/v1/chat/completions",
             status.bind_host, settings.api_port
         );
+        let payload =
+            build_agent_chat_payload(&messages, temperature, max_tokens, &agent_enabled_tools);
         let response = client
             .post(&url)
-            .json(&serde_json::json!({
-                "model": "local-model",
-                "messages": messages,
-                "temperature": temperature.clamp(0.0, 2.0),
-                "max_tokens": max_tokens,
-                "stream": false
-            }))
+            .json(&payload)
             .send()
             .map_err(|error| format_agent_transport_error("推理请求", &url, &error))?;
+        let response = if !agent_enabled_tools.is_empty()
+            && matches!(
+                response.status(),
+                reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            ) {
+            let tool_error = read_agent_http_error(response, "工具调用推理请求");
+            let mut fallback_payload = payload.clone();
+            if let Some(object) = fallback_payload.as_object_mut() {
+                object.remove("tools");
+                object.remove("tool_choice");
+                object.remove("parallel_tool_calls");
+            }
+            let fallback = client
+                .post(&url)
+                .json(&fallback_payload)
+                .send()
+                .map_err(|error| format_agent_transport_error("兼容重试", &url, &error))?;
+            if !fallback.status().is_success() {
+                return Err(format!(
+                    "{tool_error} 不带工具定义的兼容重试也失败：{}",
+                    read_agent_http_error(fallback, "兼容重试")
+                ));
+            }
+            fallback
+        } else {
+            response
+        };
         if !response.status().is_success() {
             return Err(read_agent_http_error(response, "推理请求"));
         }
-        let result: ChatResponse = response
+        let result: serde_json::Value = response
             .json()
             .map_err(|error| format!("无法解析模型回复：{error}"))?;
-        result
-            .choices
-            .into_iter()
-            .next()
-            .map(|choice| choice.message.content)
-            .ok_or_else(|| "模型未返回回复内容".to_string())
+        normalize_agent_completion(&result, &agent_enabled_tools)
     })
     .await
     .map_err(|error| format!("对话任务失败：{error}"))?

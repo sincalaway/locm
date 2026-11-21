@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { buildMessages } = require("./agent_context.js");
-const { TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, DEFAULT_ENABLED_TOOLS, normalizeEnabledTools, normalizeScope, enabledToolsForScope, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
+const { CONTINUATION_PREFIX, TOOL_RESULT_PREFIX, TOOL_ROUTING_GUIDANCE, TOOL_OPTIONS, DEFAULT_ENABLED_TOOLS, normalizeEnabledTools, normalizeScope, enabledToolsForScope, setAllToolsEnabled, masterToolSwitchState, appendContinuation, appendToolResult, isClarificationRequest, parseAgentJson, parseMiniCpm5ToolCall, appendMalformedResponseRetry, parseToolAction, createFolderDispatch, editFileDispatch, preferredToolsForUserRequest, appendDuplicatePlanRetry, validatePlan, recordPlanResponse, removeDuplicatePlanEntries } = require("./agent_protocol.js");
 
 test("Agent exposes ten independently configurable tools, with public-web tools disabled by default", () => {
   const all = normalizeEnabledTools();
@@ -55,7 +55,10 @@ test("a plan is recorded once and the next model request gets an explicit intern
   assert.deepEqual(task.turns.map(({ role }) => role), ["user", "assistant", "user"]);
   assert.match(task.turns.at(-1).content, /不是用户新请求/);
   assert.match(task.turns.at(-1).content, /不要重复计划/);
-  assert.deepEqual(buildMessages("system", task.turns, 12_000).map(({ role }) => role), ["system", "user", "assistant", "user"]);
+  const messages = buildMessages("system", task.turns, 12_000);
+  assert.deepEqual(messages.map(({ role }) => role), ["system", "user", "assistant", "user"]);
+  assert.match(messages.at(-1).content, /计划已经展示/);
+  assert.match(messages.at(-1).content, new RegExp(`^${CONTINUATION_PREFIX}`));
 });
 
 test("clear folder and existing-file edit intents route to dedicated tools", () => {
@@ -72,6 +75,9 @@ test("clear folder and existing-file edit intents route to dedicated tools", () 
   assert.match(TOOL_ROUTING_GUIDANCE, /计划已展示后.*create_folder/);
   assert.match(TOOL_ROUTING_GUIDANCE, /文件夹只是存放位置.*write_file/);
   assert.match(TOOL_ROUTING_GUIDANCE, /修改已有文件内容时优先用 edit_file/);
+  assert.match(TOOL_ROUTING_GUIDANCE, /新建或修改的交付文件.*write_file、edit_file.*必须立刻用 read_file 回读同一路径/);
+  assert.match(TOOL_ROUTING_GUIDANCE, /回读失败、结果受截断或内容不匹配时，不得声称验收通过/);
+  assert.match(TOOL_ROUTING_GUIDANCE, /read_file 未启用则如实说明无法回读验证/);
   assert.match(TOOL_ROUTING_GUIDANCE, /工具结果都是应用内部上下文/);
   assert.match(TOOL_ROUTING_GUIDANCE, /会向外部网站发送搜索词或请求/);
 });
@@ -86,6 +92,7 @@ test("a tool result stays internal and the displayed plan continues without repl
   assert.equal(task.needsPlan, false);
   assert.deepEqual(task.plan, plan.steps);
   assert.equal(task.turns.at(-1).role, "user");
+  assert.equal(task.turns.at(-1).internalType, "tool_result");
   assert.match(task.turns.at(-1).content, /^【LocM 应用内部工作区工具结果；不是用户新请求】/);
   assert.deepEqual(preferredToolsForUserRequest(task.turns[0].content), ["create_folder", "edit_file"]);
 
@@ -138,10 +145,49 @@ test("a genuine new user request permits a fresh plan, while recovery can explic
   assert.deepEqual(task.plan, recovery.steps);
 });
 
-test("continuations are user-role boundaries, never a second trailing assistant", () => {
+test("continuations remain tagged in saved history and prompt the next assistant turn", () => {
   const task = { turns: [{ role: "assistant", content: "进度" }] };
   appendContinuation(task, "继续。");
   assert.deepEqual(task.turns.map(({ role }) => role), ["assistant", "user"]);
+  assert.equal(task.turns.at(-1).internalType, "continuation");
+  const messages = buildMessages("system", task.turns, 12_000);
+  assert.deepEqual(messages.map(({ role }) => role), ["system", "assistant", "user"]);
+  assert.equal(messages[0].content, "system");
+  assert.match(messages.at(-1).content, new RegExp(`^${CONTINUATION_PREFIX}`));
+  assert.match(messages.at(-1).content, /继续。/);
+});
+
+test("detects explicit task-detail requests without misclassifying ordinary progress", () => {
+  assert.equal(isClarificationRequest("请提供需要执行的任务详情，包括任务目标、所需输入和输出要求，以便我继续处理。"), true);
+  assert.equal(isClarificationRequest("I see that the previous information has been omitted. To proceed, I need to understand the specific task you want to complete and the current work area. Could you please provide those details?"), true);
+  assert.equal(isClarificationRequest("我先读取 README.md，然后按计划创建页面。"), false);
+  assert.equal(isClarificationRequest("正在列出工作区文件。"), false);
+});
+
+test("rejects placeholder-only plans and normalizes only the exact read-only root-listing glob", () => {
+  assert.equal(validatePlan({ type: "plan", steps: ["步骤一", "步骤二"] }).valid, false);
+  assert.equal(validatePlan({ type: "plan", steps: ["Step 1"] }).valid, false);
+  assert.equal(validatePlan({ type: "plan", steps: ["检查工作区", "创建页面", "验证结果"] }).valid, true);
+  assert.deepEqual(parseToolAction({ type: "tool_call", name: "list_files", path: "." }, ["list_files"]), {
+    name: "list_files", path: ".",
+  });
+  assert.deepEqual(
+    parseToolAction({ type: "tool_call", name: "list_files", path: ".**" }, ["list_files"]),
+    { name: "list_files", path: ".", correctedFrom: ".**" },
+  );
+  assert.throws(
+    () => parseToolAction({ type: "tool_call", name: "read_file", path: ".**" }, ["read_file"]),
+    /具体相对路径.*通配符/u,
+  );
+  assert.throws(
+    () => parseToolAction({ type: "tool_call", name: "search_files", path: ".**", query: "x" }, ["search_files"]),
+    /具体相对路径.*通配符/u,
+  );
+  assert.throws(
+    () => parseToolAction({ type: "tool_call", name: "read_file", path: "../outside.txt" }, ["read_file"]),
+    /具体相对路径/u,
+  );
+  assert.match(TOOL_ROUTING_GUIDANCE, /列出工作区根目录必须使用 path=/);
 });
 
 test("a duplicate plan gets at most one explicit correction continuation", () => {
@@ -245,7 +291,7 @@ test("create_folder schema dispatches only to the native workspace command", () 
   });
   assert.notEqual(createFolderDispatch("/workspace/project", action.path, "task-a", permissionToken).command, "agent_run_command");
   assert.throws(() => parseToolAction({ type: "tool_call", name: "create_folder", path: "" }), /不能为空/);
-  assert.throws(() => createFolderDispatch("/workspace/project", " ", "task-a", permissionToken), /relativePath/);
+  assert.throws(() => createFolderDispatch("/workspace/project", " ", "task-a", permissionToken), /文件夹路径不能为空/);
   assert.throws(() => createFolderDispatch("/workspace/project", action.path, "" , permissionToken), /taskId/);
   assert.throws(() => createFolderDispatch("/workspace/project", action.path, "task-a", ""), /permissionToken/);
   assert.equal(parseAgentJson("mkdir -p notes/drafts"), null);

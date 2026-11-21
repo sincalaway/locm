@@ -443,7 +443,7 @@ struct ChatChoice {
 
 fn agent_tool_definitions(enabled_tools: &[String]) -> serde_json::Value {
     let all = serde_json::json!([
-        { "type": "function", "function": { "name": "list_files", "description": "列出所选工作区内的文件和子目录；path为相对路径，使用.表示工作区根目录。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
+        { "type": "function", "function": { "name": "list_files", "description": "列出所选工作区内当前目录的文件和子目录，不递归；path必须是具体相对目录，使用.表示工作区根目录，不支持*、?或glob通配符。", "parameters": { "type": "object", "properties": { "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": r#"^[^*?<>|\\"]+$"# } }, "required": ["path"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "search_files", "description": "在所选工作区内搜索UTF-8文本；只能使用工作区内的相对目录路径。", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "query": { "type": "string" }, "caseSensitive": { "type": "boolean" } }, "required": ["path", "query"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "read_file", "description": "读取所选工作区内的UTF-8文本文件；只能使用相对路径。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
         { "type": "function", "function": { "name": "create_folder", "description": "在所选工作区内创建空文件夹；只接受相对路径，不通过shell。", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } } },
@@ -611,11 +611,13 @@ fn normalize_agent_completion(
     response: &serde_json::Value,
     enabled_tools: &[String],
 ) -> Result<String, String> {
-    let message = response
+    let choice = response
         .get("choices")
         .and_then(serde_json::Value::as_array)
         .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
+        .ok_or_else(|| "本机模型未返回有效的completion choice".to_string())?;
+    let message = choice
+        .get("message")
         .ok_or_else(|| "本机模型未返回有效的completion message".to_string())?;
     if let Some(calls) = message
         .get("tool_calls")
@@ -630,11 +632,60 @@ fn normalize_agent_completion(
     if let Some(function_call) = message.get("function_call") {
         return normalize_agent_tool_call(function_call, enabled_tools);
     }
-    message
+    let content = message
         .get("content")
         .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| "本机模型既未返回文本，也未返回工具调用".to_string())
+        .ok_or_else(|| "本机模型既未返回文本，也未返回工具调用".to_string())?;
+    if content.trim().is_empty() {
+        let finish_reason = choice
+            .get("finish_reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未提供");
+        return Err(format!(
+            "本机模型返回了空文本（finish_reason={finish_reason}）；没有执行任何工具"
+        ));
+    }
+    Ok(content.to_string())
+}
+
+fn agent_completion_is_empty(response: &serde_json::Value) -> bool {
+    let Some(message) = response
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+    else {
+        return false;
+    };
+    let has_tool_calls = message
+        .get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    let has_legacy_call = message
+        .get("function_call")
+        .is_some_and(|call| !call.is_null());
+    let has_text = message
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|content| !content.trim().is_empty());
+    !has_tool_calls && !has_legacy_call && !has_text
+}
+
+fn agent_completion_finish_reason(response: &serde_json::Value) -> &str {
+    response
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("未提供")
+}
+
+fn retry_agent_max_tokens(max_tokens: u32, finish_reason: &str) -> u32 {
+    if finish_reason != "length" {
+        return max_tokens;
+    }
+    max_tokens.saturating_mul(2).min(4096).max(max_tokens)
 }
 
 fn build_agent_chat_payload(
@@ -739,6 +790,24 @@ mod agent_tool_protocol_tests {
     }
 
     #[test]
+    fn rejects_empty_and_whitespace_only_model_content_with_finish_reason() {
+        let empty = json!({ "choices": [{
+            "finish_reason": "stop",
+            "message": { "content": "" }
+        }] });
+        let whitespace = json!({ "choices": [{
+            "finish_reason": "length",
+            "message": { "content": " \n  " }
+        }] });
+        assert!(normalize_agent_completion(&empty, &all_tools())
+            .unwrap_err()
+            .contains("空文本（finish_reason=stop）"));
+        assert!(normalize_agent_completion(&whitespace, &all_tools())
+            .unwrap_err()
+            .contains("空文本（finish_reason=length）"));
+    }
+
+    #[test]
     fn rejects_unknown_multiple_incomplete_and_extra_argument_tool_calls() {
         let call = |name: &str, arguments: Value| json!({ "choices": [{ "message": { "tool_calls": [{ "name": name, "arguments": arguments }] } }] });
         assert!(normalize_agent_completion(
@@ -788,6 +857,23 @@ mod agent_tool_protocol_tests {
             normalize_agent_completion(&json!({ "choices": [{ "message": { "content": "{\"type\":\"done\",\"message\":\"ok\"}" } }] }), &enabled).unwrap(),
             "{\"type\":\"done\",\"message\":\"ok\"}"
         );
+    }
+
+    #[test]
+    fn list_files_schema_requires_a_concrete_non_glob_path() {
+        let tools = agent_tool_definitions(&["list_files".to_string()]);
+        let path = &tools[0]["function"]["parameters"]["properties"]["path"];
+        assert_eq!(path["minLength"], 1);
+        assert_eq!(path["maxLength"], 1024);
+        assert_eq!(path["pattern"], r#"^[^*?<>|\\"]+$"#);
+        assert!(tools[0]["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("不支持*、?或glob通配符"));
+        assert!(tools[0]["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("不递归"));
     }
 
     #[test]
@@ -985,13 +1071,13 @@ mod chat_http_error_tests {
 mod agent_local_model_diagnostics_tests {
     use super::{
         build_agent_model_client, check_agent_model_health, format_agent_http_error,
-        format_agent_transport_error, AGENT_MODEL_CONNECT_TIMEOUT, AGENT_MODEL_GUIDANCE,
-        AGENT_MODEL_REQUEST_TIMEOUT,
+        format_agent_transport_error, request_agent_completion, ChatMessage,
+        AGENT_MODEL_CONNECT_TIMEOUT, AGENT_MODEL_GUIDANCE, AGENT_MODEL_REQUEST_TIMEOUT,
     };
     use reqwest::{blocking::Client, StatusCode};
     use std::{
-        io::{Read, Write},
-        net::TcpListener,
+        io::{BufRead, BufReader, Read, Write},
+        net::{TcpListener, TcpStream},
         thread,
         time::Duration,
     };
@@ -1011,6 +1097,38 @@ mod agent_local_model_diagnostics_tests {
     fn client() -> Client {
         build_agent_model_client(AGENT_MODEL_CONNECT_TIMEOUT, AGENT_MODEL_REQUEST_TIMEOUT)
             .expect("Agent 本地模型客户端应可构造")
+    }
+
+    fn read_http_request(stream: &TcpStream) -> (String, Vec<u8>) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let request_line = line.trim_end().to_string();
+        let mut content_length = 0usize;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line == "\n" || line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = value.trim().parse().unwrap();
+                }
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader.read_exact(&mut body).unwrap();
+        (request_line, body)
+    }
+
+    fn write_http_response(stream: &mut TcpStream, status: &str, body: &str) {
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1053,6 +1171,212 @@ mod agent_local_model_diagnostics_tests {
             serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
         assert!(check_agent_model_health(&client(), "127.0.0.1", port).is_ok());
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn local_model_http_cycle_sends_tools_and_normalizes_tool_calls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = thread::spawn(move || {
+            let (mut health_stream, _) = listener.accept().unwrap();
+            let (health_line, _) = read_http_request(&health_stream);
+            assert_eq!(health_line, "GET /health HTTP/1.1");
+            write_http_response(&mut health_stream, "200 OK", "OK");
+
+            let (mut model_stream, _) = listener.accept().unwrap();
+            let (model_line, request_body) = read_http_request(&model_stream);
+            assert_eq!(model_line, "POST /v1/chat/completions HTTP/1.1");
+            let payload: serde_json::Value = serde_json::from_slice(&request_body).unwrap();
+            write_http_response(
+                &mut model_stream,
+                "200 OK",
+                r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"note.txt\"}"}}]}}]}"#,
+            );
+            payload
+        });
+
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "读取 note.txt".into(),
+        }];
+        let enabled_tools = vec!["read_file".to_string()];
+        let normalized = request_agent_completion(
+            &client(),
+            "127.0.0.1",
+            port,
+            &messages,
+            0.2,
+            1024,
+            &enabled_tools,
+        )
+        .unwrap();
+        let payload = worker.join().unwrap();
+        assert_eq!(payload["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(payload["tool_choice"], "auto");
+        assert_eq!(payload["parallel_tool_calls"], false);
+        assert_eq!(payload["messages"][0]["content"], "读取 note.txt");
+        let action: serde_json::Value = serde_json::from_str(&normalized).unwrap();
+        assert_eq!(action["type"], "tool_call");
+        assert_eq!(action["name"], "read_file");
+        assert_eq!(action["path"], "note.txt");
+    }
+
+    #[test]
+    fn local_model_retries_without_tools_when_server_rejects_tool_schema() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = thread::spawn(move || {
+            let (mut health_stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&health_stream);
+            write_http_response(&mut health_stream, "200 OK", "OK");
+
+            let (mut tool_stream, _) = listener.accept().unwrap();
+            let (_, first_body) = read_http_request(&tool_stream);
+            write_http_response(&mut tool_stream, "400 Bad Request", "tools unsupported");
+
+            let (mut fallback_stream, _) = listener.accept().unwrap();
+            let (_, fallback_body) = read_http_request(&fallback_stream);
+            write_http_response(
+                &mut fallback_stream,
+                "200 OK",
+                r#"{"choices":[{"message":{"role":"assistant","content":"{\"type\":\"message\",\"message\":\"请使用 LocM 内置工具协议。\"}"}}]}"#,
+            );
+            let first: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+            let fallback: serde_json::Value = serde_json::from_slice(&fallback_body).unwrap();
+            (first, fallback)
+        });
+
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "处理工作区文件".into(),
+        }];
+        let enabled_tools = vec!["read_file".to_string()];
+        let normalized = request_agent_completion(
+            &client(),
+            "127.0.0.1",
+            port,
+            &messages,
+            0.2,
+            1024,
+            &enabled_tools,
+        )
+        .unwrap();
+        let (first, fallback) = worker.join().unwrap();
+        assert!(first.get("tools").is_some());
+        assert!(fallback.get("tools").is_none());
+        assert!(fallback.get("tool_choice").is_none());
+        assert!(fallback.get("parallel_tool_calls").is_none());
+        assert_eq!(
+            normalized,
+            r#"{"type":"message","message":"请使用 LocM 内置工具协议。"}"#
+        );
+    }
+
+    #[test]
+    fn local_model_retries_plain_protocol_when_tool_schema_yields_empty_content() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = thread::spawn(move || {
+            let (mut health_stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&health_stream);
+            write_http_response(&mut health_stream, "200 OK", "OK");
+
+            let (mut tool_stream, _) = listener.accept().unwrap();
+            let (_, tool_body) = read_http_request(&tool_stream);
+            write_http_response(
+                &mut tool_stream,
+                "200 OK",
+                r#"{"choices":[{"finish_reason":"stop","message":{"content":""}}]}"#,
+            );
+
+            let (mut fallback_stream, _) = listener.accept().unwrap();
+            let (_, fallback_body) = read_http_request(&fallback_stream);
+            write_http_response(
+                &mut fallback_stream,
+                "200 OK",
+                r#"{"choices":[{"finish_reason":"stop","message":{"content":"{\"type\":\"tool_call\",\"name\":\"read_file\",\"path\":\"note.txt\"}"}}]}"#,
+            );
+            (
+                serde_json::from_slice::<serde_json::Value>(&tool_body).unwrap(),
+                serde_json::from_slice::<serde_json::Value>(&fallback_body).unwrap(),
+            )
+        });
+
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "读取 note.txt".into(),
+        }];
+        let enabled_tools = vec!["read_file".to_string()];
+        let normalized = request_agent_completion(
+            &client(),
+            "127.0.0.1",
+            port,
+            &messages,
+            0.2,
+            1024,
+            &enabled_tools,
+        )
+        .unwrap();
+        let (tool_payload, fallback_payload) = worker.join().unwrap();
+        assert!(tool_payload.get("tools").is_some());
+        assert!(fallback_payload.get("tools").is_none());
+        assert_eq!(fallback_payload["max_tokens"], 1024);
+        assert_eq!(
+            normalized,
+            r#"{"type":"tool_call","name":"read_file","path":"note.txt"}"#
+        );
+    }
+
+    #[test]
+    fn local_model_reports_empty_response_when_plain_protocol_retry_is_also_empty() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = thread::spawn(move || {
+            let (mut health_stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&health_stream);
+            write_http_response(&mut health_stream, "200 OK", "OK");
+
+            let (mut tool_stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&tool_stream);
+            write_http_response(
+                &mut tool_stream,
+                "200 OK",
+                r#"{"choices":[{"finish_reason":"length","message":{"content":""}}]}"#,
+            );
+
+            let (mut fallback_stream, _) = listener.accept().unwrap();
+            let (_, fallback_body) = read_http_request(&fallback_stream);
+            write_http_response(
+                &mut fallback_stream,
+                "200 OK",
+                r#"{"choices":[{"finish_reason":"length","message":{"content":"  "}}]}"#,
+            );
+            serde_json::from_slice::<serde_json::Value>(&fallback_body).unwrap()
+        });
+
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: "创建网页".into(),
+        }];
+        let error = request_agent_completion(
+            &client(),
+            "127.0.0.1",
+            port,
+            &messages,
+            0.2,
+            1024,
+            &["write_file".to_string()],
+        )
+        .unwrap_err();
+        let fallback_payload = worker.join().unwrap();
+        assert!(fallback_payload.get("tools").is_none());
+        assert_eq!(fallback_payload["max_tokens"], 2048);
+        assert!(error.contains("均返回空回复"));
+        assert!(error.contains("length"));
+        assert!(error.contains("max_tokens=1024"));
+        assert!(error.contains("max_tokens=2048"));
+        assert!(error.contains("未执行任何工具"));
     }
 
     #[test]
@@ -2623,6 +2947,96 @@ async fn stop_local_model(app: AppHandle) -> Result<RuntimeInfo, String> {
     .map_err(|error| format!("停止任务失败：{error}"))?
 }
 
+fn request_agent_completion(
+    client: &reqwest::blocking::Client,
+    host: &str,
+    port: u16,
+    messages: &[ChatMessage],
+    temperature: f32,
+    max_tokens: u32,
+    agent_enabled_tools: &[String],
+) -> Result<String, String> {
+    check_agent_model_health(client, host, port)?;
+    let url = format!("http://{host}:{port}/v1/chat/completions");
+    let payload = build_agent_chat_payload(messages, temperature, max_tokens, agent_enabled_tools);
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .map_err(|error| format_agent_transport_error("推理请求", &url, &error))?;
+    let mut response = response;
+    let mut retried_without_tools = false;
+    if !agent_enabled_tools.is_empty()
+        && matches!(
+            response.status(),
+            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+        )
+    {
+        let tool_error = read_agent_http_error(response, "工具调用推理请求");
+        let mut fallback_payload = payload.clone();
+        if let Some(object) = fallback_payload.as_object_mut() {
+            object.remove("tools");
+            object.remove("tool_choice");
+            object.remove("parallel_tool_calls");
+        }
+        let fallback = client
+            .post(&url)
+            .json(&fallback_payload)
+            .send()
+            .map_err(|error| format_agent_transport_error("兼容重试", &url, &error))?;
+        if !fallback.status().is_success() {
+            return Err(format!(
+                "{tool_error} 不带工具定义的兼容重试也失败：{}",
+                read_agent_http_error(fallback, "兼容重试")
+            ));
+        }
+        response = fallback;
+        retried_without_tools = true;
+    }
+    if !response.status().is_success() {
+        return Err(read_agent_http_error(response, "推理请求"));
+    }
+    let result: serde_json::Value = response
+        .json()
+        .map_err(|error| format!("无法解析模型回复：{error}"))?;
+    if !retried_without_tools
+        && !agent_enabled_tools.is_empty()
+        && agent_completion_is_empty(&result)
+    {
+        let first_finish_reason = agent_completion_finish_reason(&result);
+        let retry_max_tokens = retry_agent_max_tokens(max_tokens, first_finish_reason);
+        let mut fallback_payload = payload;
+        if let Some(object) = fallback_payload.as_object_mut() {
+            object.remove("tools");
+            object.remove("tool_choice");
+            object.remove("parallel_tool_calls");
+        }
+        fallback_payload["max_tokens"] = serde_json::json!(retry_max_tokens);
+        let fallback = client
+            .post(&url)
+            .json(&fallback_payload)
+            .send()
+            .map_err(|error| format_agent_transport_error("空回复兼容重试", &url, &error))?;
+        if !fallback.status().is_success() {
+            return Err(format!(
+                "本机模型返回空回复（finish_reason={first_finish_reason}）；不带工具定义的兼容重试失败：{}",
+                read_agent_http_error(fallback, "空回复兼容重试")
+            ));
+        }
+        let fallback_result: serde_json::Value = fallback
+            .json()
+            .map_err(|error| format!("空回复兼容重试的响应无法解析：{error}"))?;
+        if agent_completion_is_empty(&fallback_result) {
+            let retry_finish_reason = agent_completion_finish_reason(&fallback_result);
+            return Err(format!(
+                "本机模型在工具调用请求（max_tokens={max_tokens}）和纯JSON兼容重试（max_tokens={retry_max_tokens}）中均返回空回复（finish_reason={first_finish_reason}，重试={retry_finish_reason}）；未执行任何工具。若重试仍为 length，模型可能耗尽输出预算或未能结束思考通道；请检查模型上下文、聊天模板和本地服务日志。"
+            ));
+        }
+        return normalize_agent_completion(&fallback_result, agent_enabled_tools);
+    }
+    normalize_agent_completion(&result, agent_enabled_tools)
+}
+
 #[tauri::command]
 async fn chat_complete(
     app: AppHandle,
@@ -2665,52 +3079,15 @@ async fn chat_complete(
                     "Agent 无法初始化本机模型客户端。{AGENT_MODEL_GUIDANCE} 底层错误详情：{error}"
                 )
                 })?;
-        check_agent_model_health(&client, &status.bind_host, settings.api_port)?;
-        let url = format!(
-            "http://{}:{}/v1/chat/completions",
-            status.bind_host, settings.api_port
-        );
-        let payload =
-            build_agent_chat_payload(&messages, temperature, max_tokens, &agent_enabled_tools);
-        let response = client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .map_err(|error| format_agent_transport_error("推理请求", &url, &error))?;
-        let response = if !agent_enabled_tools.is_empty()
-            && matches!(
-                response.status(),
-                reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
-            ) {
-            let tool_error = read_agent_http_error(response, "工具调用推理请求");
-            let mut fallback_payload = payload.clone();
-            if let Some(object) = fallback_payload.as_object_mut() {
-                object.remove("tools");
-                object.remove("tool_choice");
-                object.remove("parallel_tool_calls");
-            }
-            let fallback = client
-                .post(&url)
-                .json(&fallback_payload)
-                .send()
-                .map_err(|error| format_agent_transport_error("兼容重试", &url, &error))?;
-            if !fallback.status().is_success() {
-                return Err(format!(
-                    "{tool_error} 不带工具定义的兼容重试也失败：{}",
-                    read_agent_http_error(fallback, "兼容重试")
-                ));
-            }
-            fallback
-        } else {
-            response
-        };
-        if !response.status().is_success() {
-            return Err(read_agent_http_error(response, "推理请求"));
-        }
-        let result: serde_json::Value = response
-            .json()
-            .map_err(|error| format!("无法解析模型回复：{error}"))?;
-        normalize_agent_completion(&result, &agent_enabled_tools)
+        request_agent_completion(
+            &client,
+            &status.bind_host,
+            settings.api_port,
+            &messages,
+            temperature,
+            max_tokens,
+            &agent_enabled_tools,
+        )
     })
     .await
     .map_err(|error| format!("对话任务失败：{error}"))?

@@ -112,10 +112,13 @@ fn safe_components(relative: &str, allow_root: bool) -> Result<Vec<String>, Stri
                 if value.contains(':')
                     || value.ends_with('.')
                     || value.ends_with(' ')
+                    || value
+                        .chars()
+                        .any(|character| matches!(character, '*' | '?' | '<' | '>' | '"' | '|'))
                     || value.chars().any(char::is_control)
                     || is_windows_device_name(&value)
                 {
-                    return Err("路径包含 Windows 设备名或不安全字符".to_string());
+                    return Err("路径包含 Windows 设备名、通配符或不安全字符".to_string());
                 }
                 if value.eq_ignore_ascii_case(".git") {
                     return Err("Agent 不允许读取或修改 .git 元数据".to_string());
@@ -1035,6 +1038,8 @@ mod tests {
         let entries = list_files(&root, ".").unwrap();
         assert!(entries.iter().any(|entry| entry.path == "folder"));
         assert!(entries.iter().all(|entry| !entry.path.contains(".git")));
+        assert!(list_files(&root, ".**").is_err());
+        assert!(search_files(&root, ".**", "needle", false).is_err());
         assert!(delete_file(&root, "folder").is_err());
     }
 
